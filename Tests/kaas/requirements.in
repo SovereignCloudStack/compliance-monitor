@@ -1,5 +1,0 @@
--c ../requirements.txt
-pytest-kind
-kubernetes
-kubernetes_asyncio
-jinja2
