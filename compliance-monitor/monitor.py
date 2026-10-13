@@ -49,17 +49,6 @@ from sql import (
 logger = logging.getLogger(__name__)
 
 
-try:
-    from scs_cert_lib import load_spec, annotate_validity, add_period, eval_buckets, evaluate
-except ImportError:
-    # the following course of action is not unproblematic because the Tests directory will be
-    # mounted to the Docker instance, hence it's hard to tell what version we are gonna get;
-    # however, unlike the reloading of the config, the import only happens once, and at that point
-    # in time, both monitor.py and scs_cert_lib.py should come from the same git checkout
-    import sys; sys.path.insert(0, os.path.abspath('../Tests'))  # noqa: E702
-    from scs_cert_lib import load_spec, annotate_validity, add_period, eval_buckets, evaluate
-
-
 class Settings:
     def __init__(self):
         self.db_host = os.getenv("SCM_DB_HOST", "localhost")
@@ -77,7 +66,6 @@ class Settings:
         self.base_url = os.getenv("SCM_BASE_URL", '/')
         self.bootstrap_path = os.path.abspath("./bootstrap.yaml")
         self.template_path = os.path.abspath("./templates")
-        self.yaml_path = os.path.abspath("../Tests")
 
 
 GROUP_PREFIX = 'group-'
@@ -93,11 +81,6 @@ GRACE_PERIOD_DAYS = 7
 #       http://127.0.0.1:8080/reports
 # to achieve this!
 SEP = "-----END SSH SIGNATURE-----\n&"
-ASTERISK_LOOKUP = {'effective': '', 'draft': '*', 'warn': '†', 'deprecated': '††'}
-SCOPE_ALIASES = {
-    'scs-compatible-iaas': '50393e6f-2ae1-4c5c-a62c-3b75f2abef3f',
-    'scs-compatible-kaas': '1fffebe6-fd4b-44d3-a36c-fc58b4bb0180',
-}
 
 
 class ViewType(Enum):
@@ -121,12 +104,7 @@ VIEW_TABLE = {
     ViewType.fragment: 'overview.md',
     ViewType.page: 'overview.html',
 }
-VIEW_SCOPE = {
-    ViewType.markdown: 'scope.md',
-    ViewType.fragment: 'scope.md',
-    ViewType.page: 'overview.html',
-}
-REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_DETAIL, VIEW_TABLE, VIEW_SCOPE) for fn in view.values()))
+REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_DETAIL, VIEW_TABLE) for fn in view.values()))
 
 
 # do I hate these globals, but I don't see another way with these frameworks
@@ -143,7 +121,6 @@ env = Environment()  # populate this on startup (final section of this file)
 templates_map = {
     k: None for k in REQUIRED_TEMPLATES
 }
-_scopes = {}  # map scope uuid to scope spec dict from YAML file
 
 
 class TimestampEncoder(json.JSONEncoder):
@@ -245,113 +222,6 @@ def import_bootstrap(bootstrap_path, conn):
             db_filter_publickeys(cur, accountid, lambda keyid, *_: keyid in keyids)
         db_filter_accounts(cur, lambda accountid, *_: accountid in accountids)
         conn.commit()
-
-
-def _evaluate_version(version, scope_results):
-    """evaluate the results for `version` and return the canonical JSON output"""
-    target_results = {
-        tname: {
-            'testcases': tc_ids,
-            'result': evaluate(scope_results, tc_ids),
-        }
-        for tname, tc_ids in version['targets'].items()
-    }
-    return {
-        '_idx': version['_idx'],
-        'result': target_results['main']['result'],
-        'targets': target_results,
-        'tc_target': version['tc_target'],
-        'validity': version['validity'],
-    }
-
-
-def _evaluate_scope(spec, scope_results, include_drafts=False):
-    """evaluate the results for `scope` and return the canonical JSON output"""
-    testcases = spec['testcases']
-    versions = spec['versions']
-    version_results = {
-        vname: _evaluate_version(version, scope_results)
-        for vname, version in versions.items()
-        if version['_explicit_validity']
-    }
-    winner = None  # first passed version that's not a draft
-    result = -1
-    passed = []
-    relevant = []
-    # assumption: versions are listed in spec in descending order recency
-    # first the drafts, then effective, then warn, then the rest
-    for vname, version_result in version_results.items():
-        if version_result['validity'] == 'draft' and not include_drafts:
-            continue
-        relevant.append(vname)
-        result = version_result['result']
-        if result != -1:
-            passed.append(vname)
-            if version_result['validity'] != 'draft':
-                winner = vname
-                break
-    # only list testcases that occur in any relevant version
-    relevant_testcases = set()
-    for vname in relevant:
-        for tc_ids in versions[vname]['targets'].values():
-            relevant_testcases.update(tc_ids)
-    return {
-        'name': spec['name'],
-        'testcases': testcases,
-        'results': scope_results,
-        'buckets': {
-            # sort testcase that occur any main target on top of those that don't
-            res: sorted(tc_ids, key=lambda tc_id: (not testcases[tc_id]['attn'], tc_id))
-            for res, tc_ids in eval_buckets(scope_results, relevant_testcases).items()
-        },
-        'versions': version_results,
-        'relevant': relevant,
-        'result': result,
-        'passed': passed,
-        'passed_str': ', '.join([
-            vname + ASTERISK_LOOKUP[version_results[vname]['validity']]
-            for vname in passed
-        ]),
-        'best_passed': None if winner is None else version_results[winner]['_idx'],
-        'validity': 'deprecated' if winner is None else version_results[winner]['validity'],
-    }
-
-
-def _update_lookup(spec, target_dict):
-    """Create entries in a lookup mapping for each testcase that occurs in this scope.
-
-    This mapping from pairs (scope uuid, testcase id) to testcase facilitates
-    evaluating result sets from database queries a great deal, because then just one lookup operation
-    tells us whether a result row can be associated with any known testcase, and if so, whether the
-    result is still valid (looking at the testcase's lifetime).
-
-    In the future, the mapping could even be simplified by deriving a unique id from each pair that
-    could then be stored (redundantly) in a dedicated database column, and the mapping could be from
-    just one id (instead of a pair) to testcase.
-    """
-    scope_uuid = spec['uuid']
-    for tc_id, testcase in spec['testcases'].items():
-        target_dict[(scope_uuid, tc_id)] = testcase
-
-
-def import_cert_yaml(yaml_path, target_dict):
-    yaml = ruamel.yaml.YAML(typ='safe')
-    with open(yaml_path, "r") as fileobj:
-        spec = load_spec(yaml.load(fileobj.read()))
-    annotate_validity(spec['timeline'], spec['versions'], date.today())
-    target_dict[spec['uuid']] = spec
-    _update_lookup(spec, target_dict)
-
-
-def import_cert_yaml_dir(yaml_path, target_dict):
-    for fn in sorted(os.listdir(yaml_path)):
-        if fn.startswith('scs-') and fn.endswith('.yaml'):
-            import_cert_yaml(os.path.join(yaml_path, fn), target_dict)
-
-
-def get_scopes():
-    """returns the scopes dict"""
-    return _scopes
 
 
 def import_templates(template_dir, env, templates):
@@ -501,8 +371,7 @@ async def post_report(
             for version, vdata in document['versions'].items():
                 for check, rdata in vdata.items():
                     result = rdata['result']
-                    approval = 1 == result  # pre-approve good result
-                    db_insert_result2(cur, checked_at, subject, scopeuuid, version, check, result, approval, reportid)
+                    db_insert_result2(cur, checked_at, subject, scopeuuid, version, check, result, reportid)
     conn.commit()
 
 
@@ -664,10 +533,6 @@ def _resolve_group_locally(groups, subject, prefix=GROUP_PREFIX):
     return None, [subject]
 
 
-def _resolve_scope(scopeuuid):
-    return SCOPE_ALIASES.get(scopeuuid, scopeuuid)
-
-
 @app.get("/{view_type}/detail/{subject}/{scopeuuid}")
 async def get_detail(
     request: Request,
@@ -739,67 +604,6 @@ async def get_table_full(
     view_type: ViewType,
 ):
     return _make_table_view(conn, view_type, detail_page='detail_full', include_drafts=True)
-
-
-@app.get("/{view_type}/scope/{scopeuuid}")
-async def get_scope(
-    request: Request,
-    conn: Annotated[connection, Depends(get_conn)],
-    view_type: ViewType,
-    scopeuuid: str,
-):
-    scopeuuid = _resolve_scope(scopeuuid)
-    spec = get_scopes()[scopeuuid]
-    versions = spec['versions']
-    # use same order as in details view
-    relevant = [
-        name
-        for name, version in versions.items()
-        if version['_explicit_validity']
-    ]
-    modules_chart = {}
-    for name in relevant:
-        for include in versions[name]['include']:
-            module_id = include['module']['id']
-            row = modules_chart.get(module_id)
-            if row is None:
-                row = modules_chart[module_id] = {'module': include['module'], 'columns': {}}
-            row['columns'][name] = include
-    rows = sorted(list(modules_chart.values()), key=lambda row: row['module']['id'])
-    return render_view(VIEW_SCOPE, view_type, spec=spec, relevant=relevant, rows=rows, base_url=settings.base_url, title=spec['name'])
-
-
-@app.get("/results")
-async def get_results(
-    request: Request,
-    account: Annotated[tuple[str, str], Depends(auth)],
-    conn: Annotated[connection, Depends(get_conn)],
-    approved: Optional[bool] = None, limit: int = 10, skip: int = 0,
-):
-    """get recent results, potentially filtered by approval status"""
-    check_role(account, roles=ROLES['read_any'])
-    with conn.cursor() as cur:
-        return db_get_recent_results2(cur, approved, limit, skip, max_age_days=GRACE_PERIOD_DAYS)
-
-
-@app.post("/results")
-async def post_results(
-    request: Request,
-    account: Annotated[tuple[str, str], Depends(auth)],
-    conn: Annotated[connection, Depends(get_conn)],
-):
-    """post approvals to this endpoint"""
-    check_role(account, roles=ROLES['approve'])
-    content_type = request.headers['content-type']
-    if content_type not in ('application/json', ):
-        raise HTTPException(status_code=500, detail="Unsupported content type")
-    body = await request.body()
-    document = json.loads(body.decode("utf-8"))
-    records = [document] if isinstance(document, dict) else document
-    with conn.cursor() as cur:
-        for record in records:
-            db_patch_approval2(cur, record)
-    conn.commit()
 
 
 @app.get("/healthz")
@@ -891,11 +695,6 @@ def short_isodate_filter(value):
 def reload_static_config(*args, do_ensure_schema=False):
     # allow arbitrary arguments so it can readily be used as signal handler
     logger.info("loading static config")
-    scopes = {}
-    import_cert_yaml_dir(settings.yaml_path, scopes)
-    # import successful: only NOW destructively update global _scopes
-    _scopes.clear()
-    _scopes.update(scopes)
     import_templates(settings.template_path, env=env, templates=templates_map)
     validate_templates(templates=templates_map)
     with mk_conn(settings=settings) as conn:
