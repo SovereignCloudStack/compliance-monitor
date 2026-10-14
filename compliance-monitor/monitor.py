@@ -530,8 +530,8 @@ async def get_healthz(request: Request):
 
 COLOR_MAP = {
     'fail': '🛑',
-    None: '🟧',
-    'dnf': '✅*',
+    None: '❓',
+    'dnf': '❔',
     'pass': '✅',
 }
 
