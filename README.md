@@ -131,58 +131,6 @@ Supports query parameters:
 - `limit=N`: return at most N items (default: 10);
 - `skip=N`: skip N items (useful for pagination).
 
-### GET /results
-
-Returns the most recent results that are not expired or have been expired for at most 7 days.
-
-Needs to be authenticated (via basic auth).
-
-The return value is a _list of objects_ like the following:
-
-```json
-    {
-        "reportuuid": "def374a9-56a9-492c-b113-330d491c58c7",
-        "subject": "gxscs",
-        "checked_at": "2024-03-16T14:13:53.857422",
-        "scopeuuid": "50393e6f-2ae1-4c5c-a62c-3b75f2abef3f",
-        "version": "v3",
-        "check": "image-metadata-check",
-        "result": 1,
-        "approval": false
-    }
-```
-
-Supports query parameters:
-
-- `approved=APPROVED`: return only results with approval status `APPROVED` (either 0 or 1);
-  default: no such restriction is applied;
-- `limit=N`: return at most N items (default: 10);
-- `skip=N`: skip N items (useful for pagination).
-
-### POST /results
-
-Sets approval state of given results.
-
-Needs to be authenticated (via basic auth).
-
-Needs to specify `Content-Type` as `application/json`.
-
-The request body is a _list of objects_ like the following:
-
-```json
-    {
-        "reportuuid": "def374a9-56a9-492c-b113-330d491c58c7",
-        "scopeuuid": "50393e6f-2ae1-4c5c-a62c-3b75f2abef3f",
-        "version": "v3",
-        "check": "image-metadata-check",
-        "approval": true
-    }
-```
-
-The final field is the desired state; the other fields are used to determine the result in question
-(within one report, version and check uniquely determine a result; the scope is given here as well
-in case reports at some point contain multiple scopes).
-
 ### GET /status
 
 Returns the current status of all subjects in JSON format.
@@ -190,9 +138,10 @@ Returns the current status of all subjects in JSON format.
 Query parameters:
 
 - `subject` (optional): restrict subject
-- `scopeuuid` (optional): restrict scope
 
 ### GET /metrics/{subject}
+
+(NOT IMPLEMENTED)
 
 A Prometheus exporter for the status of the subject.
 
@@ -208,13 +157,5 @@ Returns the compliance table for all active subjects, where `view_type` can be o
 - `fragment`: return HTML fragment (mimetype `text/html`)
 - `page`: return full HTML page (mimetype `text/html`)
 
-If `table_full` is used, then HTTP basic auth must be performed, and the table will show the
-privileged view (i.e., any FAIL will be reported regardless of manual approval).
-
-### GET /{view_type}/details\[_full\]/{subject}/{scopeuuid}
-
-Returns compliance details for given subject and scope.
-
-### GET /{view_type}/scope/{scopeuuid}
-
-Returns spec overview for the given scope.
+If `table_full` is used, then the table will contain some additional information that is
+not confidential, but also not of interest to the general public.

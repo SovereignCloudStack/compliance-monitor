@@ -69,9 +69,7 @@ class Settings:
 
 
 GROUP_PREFIX = 'group-'
-ROLES = {'read_any': 1, 'append_any': 2, 'admin': 4, 'approve': 8}
-# number of days that expired results will be considered in lieu of more recent, but unapproved ones
-GRACE_PERIOD_DAYS = 7
+ROLES = {'read_any': 1, 'append_any': 2, 'admin': 4}
 # separator between signature and report data; use something like
 #     ssh-keygen \
 #       -Y sign -f ~/.ssh/id_ed25519 -n report myreport.yaml
@@ -94,17 +92,12 @@ VIEW_REPORT = {
     ViewType.fragment: 'report.md',
     ViewType.page: 'overview.html',
 }
-VIEW_DETAIL = {
-    ViewType.markdown: 'details.md',
-    ViewType.fragment: 'details.md',
-    ViewType.page: 'overview.html',
-}
 VIEW_TABLE = {
     ViewType.markdown: 'overview.md',
     ViewType.fragment: 'overview.md',
     ViewType.page: 'overview.html',
 }
-REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_DETAIL, VIEW_TABLE) for fn in view.values()))
+REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_TABLE) for fn in view.values()))
 
 
 # do I hate these globals, but I don't see another way with these frameworks
@@ -210,7 +203,7 @@ def import_bootstrap(bootstrap_path, conn):
         accountids = []
         for account in accounts:
             roles = sum(ROLES[r] for r in account.get('roles', ()))
-            acc_record = {'subject': account['subject'], 'roles': roles, 'group': account.get('group')}
+            acc_record = {'subject': account['subject'], 'roles': roles}
             accountid = db_update_account(cur, acc_record)
             accountids.append(accountid)
             db_clear_delegates(cur, accountid)
@@ -310,10 +303,13 @@ async def post_report(
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/415
         raise HTTPException(status_code=415, detail="Unsupported Media Type")
 
-    auth_subject, _ = account
+    allowed_subjects = ()  # meaning: don't check this
+    auth_subject, present_roles = account
     with conn.cursor() as cur:
         keys = db_get_keys(cur, auth_subject)
-        delegation_subjects = db_find_subjects(cur, auth_subject)
+        if present_roles && ROLES['append_any'] == 0:
+            delegation_subjects = db_find_subjects(cur, auth_subject)
+            allowed_subjects = {auth_subject} | set(delegation_subjects)
 
     body = await request.body()
     body_text = body.decode("utf-8")
@@ -343,96 +339,60 @@ async def post_report(
     if not documents:
         raise HTTPException(status_code=200, detail="empty reports")
 
-    allowed_subjects = {auth_subject} | set(delegation_subjects)
-    for document in documents:
-        check_role(account, document['subject'], ROLES['append_any'])
-        if document['subject'] not in allowed_subjects:
+    if allowed_subjects:
+        all_subjects = {document['subject'] for document in documents}
+        if not all_subjects <= allowed_subjects:
             raise HTTPException(status_code=401, detail="delegation problem?")
 
     with conn.cursor() as cur:
         for document, json_text in zip(documents, json_texts):
             rundata = document['run']
             uuid, subject, checked_at = rundata['uuid'], document['subject'], document['checked_at']
-            scopeuuid = document['spec']['uuid']
             try:
                 reportid = db_insert_report(cur, uuid, checked_at, subject, json_text)
             except UniqueViolation:
                 raise HTTPException(status_code=409, detail="Conflict: report already present")
-            if 'versions' not in document:
-                # If this key is missing, this means we have a newer-style report that doesn't redundantly list
-                # results per version. One reason for this change is that the meaning of a testcase identifier
-                # no longer depends on the scope version, and we can quite simply read off the results from the
-                # invocations. -- Use the dummy version '*' as long as the db schema still expects a version.
-                document['versions'] = {'*': {
-                    tc_id: {'result': result, 'invocation': inv_id}
-                    for inv_id, invocation in document['run']['invocations'].items()
-                    for tc_id, result in invocation['results'].items()
-                }}
-            for version, vdata in document['versions'].items():
-                for check, rdata in vdata.items():
-                    result = rdata['result']
-                    db_insert_result2(cur, checked_at, subject, scopeuuid, version, check, result, reportid)
+            vdata = {
+                tc_id: {'result': result, 'invocation': inv_id}
+                for inv_id, invocation in document['run']['invocations'].items()
+                for tc_id, result in invocation['results'].items()
+            }}
+            for object_, rdata in vdata.items():
+                result = rdata['result']
+                db_insert_result2(cur, checked_at, subject, object_, result, reportid)
     conn.commit()
 
 
-def convert_result_rows_to_dict2(
-    rows, scopes_lookup, grace_period_days=0, scopes=(), subjects=(), include_report=False, include_drafts=False,
-):
-    """evaluate all versions occurring in query result `rows`, returning canonical JSON representation"""
-    now = datetime.now()
-    if grace_period_days:
-        now -= timedelta(days=grace_period_days)
-    # collect result per subject/scope/version
-    preliminary = defaultdict(lambda: defaultdict(dict))  # subject -> scope
-    missing = set()
-    for subject, scope_uuid, _, testcase_id, result, checked_at, report_uuid in rows:
-        testcase = scopes_lookup.get((scope_uuid, testcase_id))
-        if not testcase:
-            # it can be False (testcase is known but version too old) or None (testcase not known)
-            # only report the latter case
-            if testcase is None:
-                missing.add((scope_uuid, testcase_id))
-            continue
-        # drop value if too old
-        lifetime = testcase.get('lifetime')  # leave None if not present; to be handled by add_period
-        if now >= add_period(checked_at, lifetime):
-            continue
-        # don't use outdated value (FIXME only necessary as long as version column still in db!)
-        tc_result = preliminary[subject][scope_uuid].get(testcase_id, {})
-        if tc_result.get('checked_at', checked_at) > checked_at:
-            continue
-        tc_result.update(result=result, checked_at=checked_at)
-        if include_report:
-            tc_result.update(report=report_uuid)
-        preliminary[subject][scope_uuid][testcase_id] = tc_result
-    if missing:
-        logger.warning('missing objects: ' + ', '.join(repr(x) for x in missing))
+def group_attestations(rows, scopes_lookup, subjects=()):
+    """collect rows from db query in dict: subject -> object_ -> result JSON"""
+    # collect result per subject
+    coll = defaultdict(dict)
+    for guid, subject, object_, result, checked_at, report_uuid in rows:
+        coll[subject][object_] = {
+            'guid': guid,
+            'result': result,
+            'checked_at': checked_at,
+            'report': report_uuid,
+        }
     # make sure the requested subjects and scopes are present (facilitates writing jinja2 templates)
     for subject in subjects:
-        for scope in scopes:
-            _ = preliminary[subject][scope]
-    return {
-        subject: {
-            scope_uuid: _evaluate_scope(scopes_lookup[scope_uuid], scope_result, include_drafts=include_drafts)
-            for scope_uuid, scope_result in subject_result.items()
-        }
-        for subject, subject_result in preliminary.items()
-    }
+        _ = coll[subject]
+    return coll
 
 
 @app.get("/status")
 async def get_status(
     request: Request,
     conn: Annotated[connection, Depends(get_conn)],
-    subject: str = None, scopeuuid: str = None,
+    subject: str = None,
 ):
     accept = request.headers['accept']
     if 'application/json' not in accept and '*/*' not in accept:
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/406
         raise HTTPException(status_code=406, detail="client needs to accept application/json")
     with conn.cursor() as cur:
-        rows2 = db_get_relevant_results2(cur, subject, scopeuuid, approved_only=False)
-    return convert_result_rows_to_dict2(rows2, get_scopes(), include_report=True)
+        rows = db_get_relevant_attestations(cur, subject)
+    return group_attestations(rows)
 
 
 def _build_report_url(base_url, report, *args, **kwargs):
@@ -487,15 +447,25 @@ async def get_report_view(
     view_type: ViewType,
     report_uuid: str,
 ):
+    return _make_report_view(conn, view_type)
+
+
+def _make_report_view(conn, view_type, account=None):
     with conn.cursor() as cur:
         specs = db_get_report(cur, report_uuid)
     if not specs:
         raise HTTPException(status_code=404)
     spec = specs[0]
-    _redact_report(spec)
+    title = f'Report {report_uuid}'
+    if account is None:
+        _redact_report(spec)
+        title += ' (redacted)'
+    else:
+        check_role(account, spec['subject'], ROLES['read_any'])
+        title += ' (full)'
     return render_view(
         VIEW_REPORT, view_type, report=spec, base_url=settings.base_url,
-        title=f'Report {report_uuid} (redacted)',
+        title=title,
     )
 
 
@@ -507,71 +477,7 @@ async def get_report_view_full(
     view_type: ViewType,
     report_uuid: str,
 ):
-    with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
-        raise HTTPException(status_code=404)
-    spec = specs[0]
-    check_role(account, spec['subject'], ROLES['read_any'])
-    return render_view(
-        VIEW_REPORT, view_type, report=spec, base_url=settings.base_url,
-        title=f'Report {report_uuid} (full)',
-    )
-
-
-def _resolve_group(cur, subject, prefix=GROUP_PREFIX):
-    group = subject.removeprefix(prefix)
-    if subject != group:
-        return group, db_get_group(cur, group)
-    return None, [subject]
-
-
-def _resolve_group_locally(groups, subject, prefix=GROUP_PREFIX):
-    group = subject.removeprefix(prefix)
-    if subject != group:
-        return group, list(groups[group])
-    return None, [subject]
-
-
-@app.get("/{view_type}/detail/{subject}/{scopeuuid}")
-async def get_detail(
-    request: Request,
-    conn: Annotated[connection, Depends(get_conn)],
-    view_type: ViewType,
-    subject: str,
-    scopeuuid: str,
-):
-    return _make_detail_view(conn, view_type, subject, scopeuuid)
-
-
-def _make_detail_view(conn, view_type, subject, scopeuuid, include_drafts=False):
-    scopeuuid = _resolve_scope(scopeuuid)
-    with conn.cursor() as cur:
-        group, subjects = _resolve_group(cur, subject)
-        rows2 = []
-        for subj in subjects:
-            rows2.extend(db_get_relevant_results2(cur, subj, scopeuuid))
-    results2 = convert_result_rows_to_dict2(
-        rows2, get_scopes(), include_report=True, include_drafts=include_drafts,
-        subjects=subjects, scopes=(scopeuuid, ),
-    )
-    title = f'Details for group {group}' if group else f'Details for subject {subject}'
-    if include_drafts:
-        title += ' (incl. drafts)'
-    return render_view(
-        VIEW_DETAIL, view_type, results=results2, base_url=settings.base_url, title=title,
-    )
-
-
-@app.get("/{view_type}/detail_full/{subject}/{scopeuuid}")
-async def get_detail_full(
-    request: Request,
-    conn: Annotated[connection, Depends(get_conn)],
-    view_type: ViewType,
-    subject: str,
-    scopeuuid: str,
-):
-    return _make_detail_view(conn, view_type, subject, scopeuuid, include_drafts=True)
+    return _make_report_view(conn, view_type, account=account)
 
 
 @app.get("/{view_type}/table")
@@ -586,13 +492,13 @@ async def get_table(
 def _make_table_view(conn, view_type, detail_page, include_drafts=False):
     with conn.cursor() as cur:
         groups = db_get_groups(cur)
-        rows2 = db_get_relevant_results2(cur)
-    results2 = convert_result_rows_to_dict2(rows2, get_scopes(), include_drafts=include_drafts)
+        rows = db_get_relevant_attestations(cur)
+    results = group_attestations(rows)
     title = 'SCS compliance overview'
     if include_drafts:
         title += ' (incl. drafts)'
     return render_view(
-        VIEW_TABLE, view_type, results=results2, base_url=settings.base_url, detail_page=detail_page,
+        VIEW_TABLE, view_type, results=results, base_url=settings.base_url, detail_page=detail_page,
         title=title, groups=groups,
     )
 
@@ -622,69 +528,26 @@ async def get_healthz(request: Request):
     return Response()  # empty response with status 200
 
 
-@pass_context
-def pick_filter(ctx, results, scopeuuid, *subjects):
-    """Jinja filter to pick scope results from `results` for given `subject` and `scope`"""
-    scopeuuid = _resolve_scope(scopeuuid)
-    # simple case (backwards compatible): precisely one subject
-    if len(subjects) == 1:
-        group, subjects = _resolve_group_locally(ctx['groups'], subjects[0])
-        if not group:
-            return results.get(subjects[0], {}).get(scopeuuid, {})
-    # generalized case: multiple subjects
-    # in this case, drop None
-    rs = [results.get(subject, {}).get(scopeuuid, {}) for subject in subjects]
-    return [r for r in rs if r is not None]
-
-
-NIL = object()  # the version in question does not have a result
-# used to sort multiple versions according to the "goodness" of their result
-RESULT_SCORE = {
-    -1: 0,
-    None: 1,
-    NIL: 2,  # NIL and None are basically the same, but prefer None because it has more info
-    0: 3,
-    1: 4,
-}
 COLOR_MAP = {
-    -1: '🛑',  # fail
-    None: '🟧',  # missing
-    0: '✅*',  # inconclusive
-    1: '✅',  # pass
+    'fail': '🛑',
+    None: '🟧',
+    'dnf': '✅*',
+    'pass': '✅',
 }
 
 
-def summary_filter(scope_results):
-    """Jinja filter to construct summary from `scope_results`"""
+def summary_filter(attestation):
+    """Jinja filter to construct summary from `attestation`"""
     # be prepared for empty dicts here because they are created to avoid KeyError in jinja2
-    if not isinstance(scope_results, dict):
-        # new generalized case: "aggregate" results for multiple subjects
-        # simplified computation: just select the worst subject to represent the group
-        scope_results = min(
-            scope_results,
-            default={},
-            key=lambda sr: RESULT_SCORE[sr.get('result', NIL)],
-        )
-    if not scope_results:
-        return '🛑 –'
-    result = scope_results['result']
-    color = COLOR_MAP[result]
-    # if the result is not pass anyway, deduct points if the version is outdated
-    # (this case should happen very rarely because we usually don't consider those)
-    if result != -1:
-        validity = scope_results['validity']
-        if validity == 'warn':
-            color = '🟧'
-        elif validity == 'deprecated':
-            color = '🛑'
-    passed_str = scope_results['passed_str'] or '–'
-    return f'{color} {passed_str}'
+    if not attestation:
+        return '🛑'
+    return COLOR_MAP[attestation['result']]
 
 
 def verdict_check_filter(value):
     """Jinja filter to turn a canonical result value into a symbolic verdict (✔, ⚠, or ✘)"""
     # be fault-tolerant here and turn every non-canonical value into a MISS
-    return {1: '✔', -1: '✘'}.get(value, '⚠')
+    return {'pass': '✔', 'fail': '✘'}.get(value, '⚠')
 
 
 def short_isodate_filter(value):
@@ -706,11 +569,9 @@ def reload_static_config(*args, do_ensure_schema=False):
 if __name__ == "__main__":
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     env.filters.update(
-        pick=pick_filter,
         summary=summary_filter,
         verdict_check=verdict_check_filter,
         markdown=markdown,
-        validity_symbol=ASTERISK_LOOKUP.get,
         short_isodate=short_isodate_filter,
     )
     reload_static_config(do_ensure_schema=True)

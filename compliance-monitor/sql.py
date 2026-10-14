@@ -7,7 +7,7 @@ from psycopg2.extensions import cursor, connection
 SCHEMA_VERSION_KEY = 'version'
 SCHEMA_VERSIONS = ['v5']
 # use ... (Ellipsis) here to indicate that no default value exists (will lead to error if no value is given)
-ACCOUNT_DEFAULTS = {'subject': ..., 'api_key': ..., 'roles': ..., 'group': None}
+ACCOUNT_DEFAULTS = {'subject': ..., 'api_key': ..., 'roles': ...}
 PUBLIC_KEY_DEFAULTS = {'public_key': ..., 'public_key_type': ..., 'public_key_name': ...}
 
 
@@ -63,8 +63,7 @@ def db_ensure_schema_common(cur: cursor):
     CREATE TABLE IF NOT EXISTS account (
         accountid SERIAL PRIMARY KEY,
         subject text UNIQUE,
-        roles integer,
-        "group" text
+        roles integer
     );
     CREATE TABLE IF NOT EXISTS delegation (
         delegateid integer NOT NULL REFERENCES account ON DELETE CASCADE ON UPDATE CASCADE,
@@ -89,7 +88,6 @@ def db_ensure_schema_common(cur: cursor):
         reportid SERIAL PRIMARY KEY,
         reportuuid text UNIQUE,
         checked_at timestamp,
-        subject text,
         data jsonb
     );
     ''')
@@ -112,6 +110,8 @@ def db_ensure_schema_v4(cur: cursor):
 def db_ensure_schema_v5(cur: cursor):
     db_ensure_schema_common(cur)
     cur.execute('''
+    ALTER TABLE account DROP COLUMN IF EXISTS "group";
+    ALTER TABLE report DROP COLUMN IF EXISTS subject;
     CREATE TABLE IF NOT EXISTS attestation (
         resultid SERIAL PRIMARY KEY,
         guid text NOT NULL,
@@ -218,12 +218,11 @@ def db_ensure_schema(conn: connection):
 def db_update_account(cur: cursor, record: dict):
     sanitized = sanitize_record(record, ACCOUNT_DEFAULTS)
     cur.execute('''
-    INSERT INTO account (subject, roles, "group")
-    VALUES (%(subject)s, %(roles)s, %(group)s)
+    INSERT INTO account (subject, roles)
+    VALUES (%(subject)s, %(roles)s)
     ON CONFLICT (subject)
     DO UPDATE
-    SET roles = EXCLUDED.roles,
-    "group" = EXCLUDED."group"
+    SET roles = EXCLUDED.roles
     RETURNING accountid;''', sanitized)
     accountid, = cur.fetchone()
     return accountid
@@ -258,19 +257,6 @@ def db_find_subjects(cur: cursor, delegate):
     JOIN account b ON b.accountid = delegation.delegateid
     WHERE b.subject = %s;''', (delegate, ))
     return [row[0] for row in cur.fetchall()]
-
-
-def db_get_group(cur: cursor, group):
-    cur.execute('''SELECT subject FROM account WHERE "group" = %s;''', (group, ))
-    return [row[0] for row in cur.fetchall()]
-
-
-def db_get_groups(cur: cursor):
-    cur.execute('''SELECT subject, "group" FROM account WHERE "group" is not null and "group" != '';''')
-    groups = defaultdict(list)
-    for row in cur.fetchall():
-        groups[row[1]].append(row[0])
-    return groups
 
 
 def db_update_apikey(cur: cursor, accountid, apikey_hash):
@@ -336,12 +322,12 @@ def db_get_reports(cur: cursor, subject, limit, skip):
     return [row[0] for row in cur.fetchall()]
 
 
-def db_insert_report(cur: cursor, uuid, checked_at, subject, json_text):
+def db_insert_report(cur: cursor, uuid, checked_at, json_text):
     # this is an exception in that we don't use a record parameter (it's just not as practical here)
     cur.execute('''
-    INSERT INTO report (reportuuid, checked_at, subject, data)
-    VALUES (%s, %s, %s, %s)
-    RETURNING reportid;''', (uuid, checked_at, subject, json_text))
+    INSERT INTO report (reportuuid, checked_at, data)
+    VALUES (%s, %s, %s)
+    RETURNING reportid;''', (uuid, checked_at, json_text))
     reportid, = cur.fetchone()
     return reportid
 
