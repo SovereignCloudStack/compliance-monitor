@@ -349,14 +349,14 @@ def db_get_relevant_attestations(cur: cursor, subject=None):
     # DISTINCT ON is a Postgres-specific construct that comes in very handy here :)
     cur.execute(sql.SQL('''
     SELECT DISTINCT ON (subject, object)
-    subject, object, predicate, guid, result2.checked_at, report.reportuuid
+    subject, object, predicate, guid, attestation.checked_at, report.reportuuid
     FROM attestation
-    JOIN report ON report.reportid = result2.reportid
+    JOIN report ON report.reportid = attestation.reportid
     {filter_condition}
     ORDER BY subject, object, checked_at DESC;
     ''').format(
         filter_condition=make_where_clause(
-            None if subject is None else sql.SQL('result2.subject = %(subject)s'),
+            None if subject is None else sql.SQL('attestation.subject = %(subject)s'),
         ),
     ), {"subject": subject})
     return cur.fetchall()

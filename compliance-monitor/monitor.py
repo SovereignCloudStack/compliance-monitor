@@ -39,10 +39,10 @@ import uvicorn
 
 from sql import (
     db_find_account, db_update_account, db_update_publickey, db_filter_publickeys, db_get_reports,
-    db_get_keys, db_insert_report, db_get_recent_results2, db_patch_approval2, db_get_report,
+    db_get_keys, db_insert_report, db_get_report,
     db_ensure_schema, db_get_apikeys, db_update_apikey, db_filter_apikeys, db_clear_delegates,
-    db_find_subjects, db_insert_result2, db_get_relevant_results2, db_add_delegate, db_get_group,
-    db_filter_accounts, db_get_groups,
+    db_find_subjects, db_insert_attestation, db_get_relevant_attestations, db_add_delegate,
+    db_filter_accounts,
 )
 
 
@@ -307,7 +307,7 @@ async def post_report(
     auth_subject, present_roles = account
     with conn.cursor() as cur:
         keys = db_get_keys(cur, auth_subject)
-        if present_roles && ROLES['append_any'] == 0:
+        if present_roles & ROLES['append_any'] == 0:
             delegation_subjects = db_find_subjects(cur, auth_subject)
             allowed_subjects = {auth_subject} | set(delegation_subjects)
 
@@ -356,14 +356,14 @@ async def post_report(
                 tc_id: {'result': result, 'invocation': inv_id}
                 for inv_id, invocation in document['run']['invocations'].items()
                 for tc_id, result in invocation['results'].items()
-            }}
+            }
             for object_, rdata in vdata.items():
                 result = rdata['result']
                 db_insert_result2(cur, checked_at, subject, object_, result, reportid)
     conn.commit()
 
 
-def group_attestations(rows, scopes_lookup, subjects=()):
+def group_attestations(rows, subjects=()):
     """collect rows from db query in dict: subject -> object_ -> result JSON"""
     # collect result per subject
     coll = defaultdict(dict)
@@ -374,7 +374,7 @@ def group_attestations(rows, scopes_lookup, subjects=()):
             'checked_at': checked_at,
             'report': report_uuid,
         }
-    # make sure the requested subjects and scopes are present (facilitates writing jinja2 templates)
+    # make sure the requested subjects are present (facilitates writing jinja2 templates)
     for subject in subjects:
         _ = coll[subject]
     return coll
@@ -410,10 +410,9 @@ def render_view(view, view_type, detail_page='detail', base_url='/', title=None,
     stage1 = stage2 = view[view_type]
     if view_type is ViewType.page:
         stage1 = view[ViewType.fragment]
-    def scope_url(uuid): return f"{base_url}page/scope/{uuid}"  # noqa: E306,E704
-    def detail_url(subject, scope): return f"{base_url}page/{detail_page}/{subject}/{scope}"  # noqa: E306,E704
+    def detail_url(subject, object_): return f"{base_url}page/{detail_page}/{subject}/{object_}"  # noqa: E306,E704
     def report_url(report, *args, **kwargs): return _build_report_url(base_url, report, *args, **kwargs)  # noqa: E306,E704
-    fragment = templates_map[stage1].render(base_url=base_url, detail_url=detail_url, report_url=report_url, scope_url=scope_url, **kwargs)
+    fragment = templates_map[stage1].render(base_url=base_url, detail_url=detail_url, report_url=report_url, **kwargs)
     if view_type != ViewType.markdown and stage1.endswith('.md'):
         fragment = markdown(fragment, extensions=['extra'])
     if stage1 != stage2:
@@ -491,7 +490,6 @@ async def get_table(
 
 def _make_table_view(conn, view_type, detail_page, include_drafts=False):
     with conn.cursor() as cur:
-        groups = db_get_groups(cur)
         rows = db_get_relevant_attestations(cur)
     results = group_attestations(rows)
     title = 'SCS compliance overview'
@@ -499,7 +497,7 @@ def _make_table_view(conn, view_type, detail_page, include_drafts=False):
         title += ' (incl. drafts)'
     return render_view(
         VIEW_TABLE, view_type, results=results, base_url=settings.base_url, detail_page=detail_page,
-        title=title, groups=groups,
+        title=title,
     )
 
 
