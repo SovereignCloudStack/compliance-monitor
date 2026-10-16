@@ -327,7 +327,11 @@ def db_insert_attestation(cur: cursor, reportid, record: dict):
 
 
 def db_get_relevant_attestations(cur: cursor, subject=None):
-    """for each combination of subject/object, get the most recent predicate that is still valid"""
+    """
+    For each combination of subject/object, get the most recent predicate.
+    If a `subject` is given, only return attestations for subjects of the form
+    `subject` (direct match) or `subject-...` (prefix with dash)
+    """
     # DISTINCT ON is a Postgres-specific construct that comes in very handy here :)
     cur.execute(sql.SQL('''
     SELECT DISTINCT ON (subject, object)
@@ -338,7 +342,7 @@ def db_get_relevant_attestations(cur: cursor, subject=None):
     ORDER BY subject, object, timestamp DESC;
     ''').format(
         filter_condition=make_where_clause(
-            None if subject is None else sql.SQL('attestation.subject = %(subject)s'),
+            None if subject is None else sql.SQL("attestation.subject ~ (%(subject)s || '(-.+)?')"),
         ),
     ), {"subject": subject})
     return cur.fetchall()
