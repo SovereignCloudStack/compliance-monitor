@@ -298,13 +298,10 @@ def db_get_report(cur: cursor, report_uuid):
     return [row[0] for row in cur.fetchall()]
 
 
-def db_get_reports(cur: cursor, subject, limit, skip):
+def db_get_reports(cur: cursor, limit, skip):
     cur.execute(
-        sql.SQL("SELECT data FROM report {} LIMIT %(limit)s OFFSET %(skip)s;")
-        .format(make_where_clause(
-            None if not subject else sql.SQL('subject = %(subject)s'),
-        )),
-        {"subject": subject, "limit": limit, "skip": skip},
+        sql.SQL("SELECT data FROM report LIMIT %(limit)s OFFSET %(skip)s;"),
+        {"limit": limit, "skip": skip},
     )
     return [row[0] for row in cur.fetchall()]
 
@@ -314,7 +311,7 @@ def db_insert_report(cur: cursor, uuid, json_text):
     cur.execute('''
     INSERT INTO report (reportuuid, data)
     VALUES (%s, %s)
-    RETURNING reportid;''', (uuid, checked_at, json_text))
+    RETURNING reportid;''', (uuid, json_text))
     reportid, = cur.fetchone()
     return reportid
 
@@ -334,7 +331,7 @@ def db_get_relevant_attestations(cur: cursor, subject=None):
     # DISTINCT ON is a Postgres-specific construct that comes in very handy here :)
     cur.execute(sql.SQL('''
     SELECT DISTINCT ON (subject, object)
-    guid, timestamp, subject, object, predicate, report.reportuuid
+    guid, timestamp, subject, predicate, object, report.reportuuid
     FROM attestation
     JOIN report ON report.reportid = attestation.reportid
     {filter_condition}

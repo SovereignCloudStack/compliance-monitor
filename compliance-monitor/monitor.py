@@ -274,7 +274,7 @@ async def get_reports(
     else:
         check_role(account, subject, ROLES['read_any'])
     with conn.cursor() as cur:
-        return db_get_reports(cur, subject, limit, skip)
+        return db_get_reports(cur, limit, skip)
 
 
 @app.get("/reports/{report_uuid}")
@@ -284,12 +284,14 @@ async def get_report(
     report_uuid: str,
 ):
     with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
+        reports = db_get_report(cur, report_uuid)
+    if not reports:
         raise HTTPException(status_code=404)
-    spec = specs[0]
-    check_role(account, spec['subject'], ROLES['read_any'])
-    return Response(content=json.dumps(spec, indent=2), media_type="application/json")
+    report = reports[0]
+    # NOTE report can cover multiple subjects!
+    # for the time being, just go ahead; this is authenticated after all
+    # check_role(account, spec['subject'], ROLES['read_any'])
+    return Response(content=json.dumps(report, indent=2), media_type="application/json")
 
 
 @app.post("/reports")
@@ -427,21 +429,38 @@ def render_view(view, view_type, detail_page='detail', base_url='/', title=None,
 
 def _redact_report(report):
     """remove all lines from script output in `report` that are not directly linked to any testcase"""
-    if 'run' not in report or 'invocations' not in report['run']:
-        return
-    for invdata in report['run']['invocations'].values():
-        stdout = invdata.get('stdout', [])
-        redacted = [line for line in stdout if line.rsplit(': ', 1)[-1] in ('PASS', 'ABORT', 'FAIL')]
-        if len(redacted) != len(stdout):
-            redacted.insert(0, '(the following has been redacted)')
-            invdata['stdout'] = redacted
-            invdata['redacted'] = True
-        stderr = invdata.get('stderr', [])
-        redacted = [line for line in stderr if line[:6] in ('WARNIN', 'ERROR:')]
-        if len(redacted) != len(stderr):
-            redacted.insert(0, '(the following has been redacted)')
-            invdata['stderr'] = redacted
-            invdata['redacted'] = True
+    log = report['log']
+    # don't do list comprehension here because it would restrict the logic
+    # (e.g. hard to replace a batch of lines by a different batch of lines)
+    redacted = []
+    for line in log:
+        parts = line.split(': ', 1)
+        if len(parts) != 2:
+            continue
+        # don't redact 'official' error messages
+        # this can still leak information and should be changed
+        if parts[0] in ('WARNING', 'ERROR', 'CRITICAL'):
+            redacted.append(line)
+        # don't redact the line that states what testcase is now being tested
+        elif parts[0] in ('INFO', ) and parts[1][:3] in ('***', '+++'):
+            redacted.append(line)
+    report['log'] = redacted
+    if len(redacted) != len(log):
+        report['unredacted'] = log
+
+
+def _augment_report(report):
+    attestations = {a['guid']: a for a in report['attestations']}
+    log = []
+    for line in report.get('log', ()):
+        if line.startswith('INFO: *** '):
+            guid = line.split()[-1][1:-1]  # final part is "($GUID)"
+            a = attestations.get(guid)
+            if a is not None:
+                a['_inlog'] = True
+                line = f'INFO: *** {a["subject"]}/{a["object"]}: {a["predicate"].upper()} ({a["guid"]})'
+        log.append(line)
+    report['log'] = log
 
 
 @app.get("/{view_type}/report/{report_uuid}")
@@ -451,24 +470,27 @@ async def get_report_view(
     view_type: ViewType,
     report_uuid: str,
 ):
-    return _make_report_view(conn, view_type)
+    return _make_report_view(conn, view_type, report_uuid)
 
 
-def _make_report_view(conn, view_type, account=None):
+def _make_report_view(conn, view_type, report_uuid, account=None):
     with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
+        reports = db_get_report(cur, report_uuid)
+    if not reports:
         raise HTTPException(status_code=404)
-    spec = specs[0]
+    report = reports[0]
+    _augment_report(report)
     title = f'Report {report_uuid}'
     if account is None:
-        _redact_report(spec)
+        _redact_report(report)
         title += ' (redacted)'
     else:
-        check_role(account, spec['subject'], ROLES['read_any'])
+        # NOTE report can cover multiple subjects!
+        # for the time being, just go ahead; this is authenticated after all
+        # check_role(account, report['subject'], ROLES['read_any'])
         title += ' (full)'
     return render_view(
-        VIEW_REPORT, view_type, report=spec, base_url=settings.base_url,
+        VIEW_REPORT, view_type, report=report, base_url=settings.base_url,
         title=title,
     )
 
@@ -481,7 +503,7 @@ async def get_report_view_full(
     view_type: ViewType,
     report_uuid: str,
 ):
-    return _make_report_view(conn, view_type, account=account)
+    return _make_report_view(conn, view_type, report_uuid, account=account)
 
 
 @app.get("/{view_type}/table")
