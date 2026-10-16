@@ -9,6 +9,7 @@ SCHEMA_VERSIONS = ['v5']
 # use ... (Ellipsis) here to indicate that no default value exists (will lead to error if no value is given)
 ACCOUNT_DEFAULTS = {'subject': ..., 'api_key': ..., 'roles': ...}
 PUBLIC_KEY_DEFAULTS = {'public_key': ..., 'public_key_type': ..., 'public_key_name': ...}
+ATTESTATION_DEFAULTS = {'guid': ..., 'subject': ..., 'object': ..., 'predicate': ..., 'timestamp': ...}
 
 
 class SchemaVersionError(Exception):
@@ -87,22 +88,7 @@ def db_ensure_schema_common(cur: cursor):
     CREATE TABLE IF NOT EXISTS report (
         reportid SERIAL PRIMARY KEY,
         reportuuid text UNIQUE,
-        checked_at timestamp,
         data jsonb
-    );
-    ''')
-
-
-def db_ensure_schema_v4(cur: cursor):
-    db_ensure_schema_common(cur)
-    cur.execute('''
-    CREATE TABLE IF NOT EXISTS result2 (
-        resultid SERIAL PRIMARY KEY,
-        checked_at timestamp NOT NULL,
-        subject text NOT NULL,
-        testcase text NOT NULL,
-        result int,
-        reportid integer NOT NULL REFERENCES report ON DELETE CASCADE ON UPDATE CASCADE
     );
     ''')
 
@@ -112,10 +98,11 @@ def db_ensure_schema_v5(cur: cursor):
     cur.execute('''
     ALTER TABLE account DROP COLUMN IF EXISTS "group";
     ALTER TABLE report DROP COLUMN IF EXISTS subject;
+    ALTER TABLE report DROP COLUMN IF EXISTS checked_at;
     CREATE TABLE IF NOT EXISTS attestation (
         resultid SERIAL PRIMARY KEY,
         guid text NOT NULL,
-        checked_at timestamp NOT NULL,
+        timestamp timestamp NOT NULL,
         subject text NOT NULL,
         predicate text NOT NULL,  -- such as pass, dnf, fail
         object text NOT NULL,     -- testcase id
@@ -128,7 +115,7 @@ def db_upgrade_data_v4_v5(cur):
     # move stuff over from result2 to attestation
     # delete here for transaction safety
     cur.execute('''
-    INSERT INTO attestation (guid, checked_at, subject, predicate, object, reportid)
+    INSERT INTO attestation (guid, timestamp, subject, predicate, object, reportid)
     SELECT
         -- these testcases don't have a GUID yet, but the following is unique
         -- because reports at the time pertained to one subject only
@@ -322,24 +309,22 @@ def db_get_reports(cur: cursor, subject, limit, skip):
     return [row[0] for row in cur.fetchall()]
 
 
-def db_insert_report(cur: cursor, uuid, checked_at, json_text):
+def db_insert_report(cur: cursor, uuid, json_text):
     # this is an exception in that we don't use a record parameter (it's just not as practical here)
     cur.execute('''
-    INSERT INTO report (reportuuid, checked_at, data)
-    VALUES (%s, %s, %s)
+    INSERT INTO report (reportuuid, data)
+    VALUES (%s, %s)
     RETURNING reportid;''', (uuid, checked_at, json_text))
     reportid, = cur.fetchone()
     return reportid
 
 
-def db_insert_attestation(
-    cur: cursor, guid, checked_at, subject, predicate, object_, reportid
-):
-    # this is an exception in that we don't use a record parameter (it's just not as practical here)
+def db_insert_attestation(cur: cursor, reportid, record: dict):
+    sanitized = sanitize_record(record, ATTESTATION_DEFAULTS, reportid=reportid)
     cur.execute('''
-    INSERT INTO attestation (guid, checked_at, subject, predicate, object, reportid)
-    VALUES (%s, %s, %s, %s, %s, %s)
-    RETURNING resultid;''', (guid, checked_at, subject, predicate, object_, reportid))
+    INSERT INTO attestation (guid, timestamp, subject, predicate, object, reportid)
+    VALUES (%(guid)s, %(timestamp)s, %(subject)s, %(predicate)s, %(object)s, %(reportid)s)
+    RETURNING resultid;''', sanitized)
     resultid, = cur.fetchone()
     return resultid
 
@@ -349,11 +334,11 @@ def db_get_relevant_attestations(cur: cursor, subject=None):
     # DISTINCT ON is a Postgres-specific construct that comes in very handy here :)
     cur.execute(sql.SQL('''
     SELECT DISTINCT ON (subject, object)
-    subject, object, predicate, guid, attestation.checked_at, report.reportuuid
+    guid, timestamp, subject, object, predicate, report.reportuuid
     FROM attestation
     JOIN report ON report.reportid = attestation.reportid
     {filter_condition}
-    ORDER BY subject, object, checked_at DESC;
+    ORDER BY subject, object, timestamp DESC;
     ''').format(
         filter_condition=make_where_clause(
             None if subject is None else sql.SQL('attestation.subject = %(subject)s'),

@@ -54,6 +54,7 @@ class Settings:
         self.db_host = os.getenv("SCM_DB_HOST", "localhost")
         self.db_port = os.getenv("SCM_DB_PORT", 5432)
         self.db_user = os.getenv("SCM_DB_USER", "postgres")
+        self.db_name = os.getenv("SCM_DB_NAME", "postgres")
         # use default value of None for security reasons (won't be matched)
         self.hc_user = os.getenv("SCM_HC_USER", None)
         self.hc_password = os.getenv("SCM_HC_PASSWORD", None)
@@ -125,8 +126,10 @@ class TimestampEncoder(json.JSONEncoder):
 
 
 def mk_conn(settings=settings):
-    return psycopg2.connect(host=settings.db_host, user=settings.db_user,
-                            password=settings.db_password, port=settings.db_port)
+    return psycopg2.connect(
+        host=settings.db_host, user=settings.db_user, dbname=settings.db_name,
+        password=settings.db_password, port=settings.db_port,
+    )
 
 
 def get_conn(settings=settings):
@@ -295,9 +298,7 @@ async def post_report(
     account: Annotated[tuple[str, str], Depends(auth)],
     conn: Annotated[connection, Depends(get_conn)],
 ):
-    # TODO this endpoint handles almost all user input, so check thoroughly and generate nice errors!
     # check_role call further below because we need the subject from the document
-    # (we could expect the subject in the path or query and then later only check equality)
     content_type = request.headers['content-type']
     if content_type not in ('application/x-signed-yaml', 'application/x-signed-json'):
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/415
@@ -339,39 +340,43 @@ async def post_report(
     if not documents:
         raise HTTPException(status_code=200, detail="empty reports")
 
+    for document in documents:
+        missing_fields = [key for key in ('creator', 'attestations', 'uuid', 'log') if key not in document]
+        if missing_fields:
+            raise HTTPException(status_code=400, detail=f"report fields missing: {missing_fields}")
+
     if allowed_subjects:
-        all_subjects = {document['subject'] for document in documents}
+        all_subjects = {
+            attestation['subject']
+            for document in documents
+            for attestation in document['attestations']
+        }
         if not all_subjects <= allowed_subjects:
             raise HTTPException(status_code=401, detail="delegation problem?")
 
     with conn.cursor() as cur:
         for document, json_text in zip(documents, json_texts):
-            rundata = document['run']
-            uuid, subject, checked_at = rundata['uuid'], document['subject'], document['checked_at']
+            uuid = document['uuid']
             try:
-                reportid = db_insert_report(cur, uuid, checked_at, subject, json_text)
+                reportid = db_insert_report(cur, uuid, json_text)
             except UniqueViolation:
-                raise HTTPException(status_code=409, detail="Conflict: report already present")
-            vdata = {
-                tc_id: {'result': result, 'invocation': inv_id}
-                for inv_id, invocation in document['run']['invocations'].items()
-                for tc_id, result in invocation['results'].items()
-            }
-            for object_, rdata in vdata.items():
-                result = rdata['result']
-                db_insert_result2(cur, checked_at, subject, object_, result, reportid)
+                raise HTTPException(status_code=409, detail=f"Conflict: report {uuid} already present")
+            for attestation in document['attestations']:
+                db_insert_attestation(cur, reportid, attestation)
     conn.commit()
 
 
 def group_attestations(rows, subjects=()):
-    """collect rows from db query in dict: subject -> object_ -> result JSON"""
+    """collect rows from db query in dict: subject -> object_ -> attestation"""
     # collect result per subject
     coll = defaultdict(dict)
-    for guid, subject, object_, result, checked_at, report_uuid in rows:
+    for guid, timestamp, subject, predicate, object_, report_uuid in rows:
         coll[subject][object_] = {
             'guid': guid,
-            'result': result,
-            'checked_at': checked_at,
+            'timestamp': timestamp,
+            'subject': subject,
+            'predicate': predicate,
+            'object': object_,
             'report': report_uuid,
         }
     # make sure the requested subjects are present (facilitates writing jinja2 templates)

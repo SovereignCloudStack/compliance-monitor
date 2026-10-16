@@ -68,6 +68,22 @@ because otherwise you won't be able to post new data. See the dedicated section 
 
 To use the service in production, it is strongly recommended to set up a reverse proxy with SSL.
 
+### Development instance
+
+You can create a dedicated database in your Postgres RDBMS for running a dev instance like so
+(add `-h HOSTNAME` and `-p PORT` to the commandline if necessary):
+
+```shell
+$ psql -U postgres
+(abbreviated)
+postgres=# create database scmdev;
+CREATE DATABASE
+postgres=# GRANT ALL PRIVILEGES ON DATABASE scmdev TO postgres;
+GRANT
+```
+
+Then set the environment variable `SCM_DB_NAME=scmdev` when launching `monitor.py`.
+
 ## Bootstrap file
 
 This file will be read and the database updated accordingly when the service is started, as well as upon the
