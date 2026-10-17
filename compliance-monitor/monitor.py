@@ -39,25 +39,14 @@ import uvicorn
 
 from sql import (
     db_find_account, db_update_account, db_update_publickey, db_filter_publickeys, db_get_reports,
-    db_get_keys, db_insert_report, db_get_recent_results2, db_patch_approval2, db_get_report,
+    db_get_keys, db_insert_report, db_get_report,
     db_ensure_schema, db_get_apikeys, db_update_apikey, db_filter_apikeys, db_clear_delegates,
-    db_find_subjects, db_insert_result2, db_get_relevant_results2, db_add_delegate, db_get_group,
-    db_filter_accounts, db_get_groups,
+    db_find_subjects, db_insert_attestation, db_get_relevant_attestations, db_add_delegate,
+    db_filter_accounts,
 )
 
 
 logger = logging.getLogger(__name__)
-
-
-try:
-    from scs_cert_lib import load_spec, annotate_validity, add_period, eval_buckets, evaluate
-except ImportError:
-    # the following course of action is not unproblematic because the Tests directory will be
-    # mounted to the Docker instance, hence it's hard to tell what version we are gonna get;
-    # however, unlike the reloading of the config, the import only happens once, and at that point
-    # in time, both monitor.py and scs_cert_lib.py should come from the same git checkout
-    import sys; sys.path.insert(0, os.path.abspath('../Tests'))  # noqa: E702
-    from scs_cert_lib import load_spec, annotate_validity, add_period, eval_buckets, evaluate
 
 
 class Settings:
@@ -65,6 +54,7 @@ class Settings:
         self.db_host = os.getenv("SCM_DB_HOST", "localhost")
         self.db_port = os.getenv("SCM_DB_PORT", 5432)
         self.db_user = os.getenv("SCM_DB_USER", "postgres")
+        self.db_name = os.getenv("SCM_DB_NAME", "postgres")
         # use default value of None for security reasons (won't be matched)
         self.hc_user = os.getenv("SCM_HC_USER", None)
         self.hc_password = os.getenv("SCM_HC_PASSWORD", None)
@@ -77,13 +67,10 @@ class Settings:
         self.base_url = os.getenv("SCM_BASE_URL", '/')
         self.bootstrap_path = os.path.abspath("./bootstrap.yaml")
         self.template_path = os.path.abspath("./templates")
-        self.yaml_path = os.path.abspath("../Tests")
 
 
 GROUP_PREFIX = 'group-'
-ROLES = {'read_any': 1, 'append_any': 2, 'admin': 4, 'approve': 8}
-# number of days that expired results will be considered in lieu of more recent, but unapproved ones
-GRACE_PERIOD_DAYS = 7
+ROLES = {'read_any': 1, 'append_any': 2, 'admin': 4}
 # separator between signature and report data; use something like
 #     ssh-keygen \
 #       -Y sign -f ~/.ssh/id_ed25519 -n report myreport.yaml
@@ -93,11 +80,6 @@ GRACE_PERIOD_DAYS = 7
 #       http://127.0.0.1:8080/reports
 # to achieve this!
 SEP = "-----END SSH SIGNATURE-----\n&"
-ASTERISK_LOOKUP = {'effective': '', 'draft': '*', 'warn': '†', 'deprecated': '††'}
-SCOPE_ALIASES = {
-    'scs-compatible-iaas': '50393e6f-2ae1-4c5c-a62c-3b75f2abef3f',
-    'scs-compatible-kaas': '1fffebe6-fd4b-44d3-a36c-fc58b4bb0180',
-}
 
 
 class ViewType(Enum):
@@ -111,22 +93,12 @@ VIEW_REPORT = {
     ViewType.fragment: 'report.md',
     ViewType.page: 'overview.html',
 }
-VIEW_DETAIL = {
-    ViewType.markdown: 'details.md',
-    ViewType.fragment: 'details.md',
-    ViewType.page: 'overview.html',
-}
 VIEW_TABLE = {
     ViewType.markdown: 'overview.md',
     ViewType.fragment: 'overview.md',
     ViewType.page: 'overview.html',
 }
-VIEW_SCOPE = {
-    ViewType.markdown: 'scope.md',
-    ViewType.fragment: 'scope.md',
-    ViewType.page: 'overview.html',
-}
-REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_DETAIL, VIEW_TABLE, VIEW_SCOPE) for fn in view.values()))
+REQUIRED_TEMPLATES = tuple(set(fn for view in (VIEW_REPORT, VIEW_TABLE) for fn in view.values()))
 
 
 # do I hate these globals, but I don't see another way with these frameworks
@@ -143,7 +115,6 @@ env = Environment()  # populate this on startup (final section of this file)
 templates_map = {
     k: None for k in REQUIRED_TEMPLATES
 }
-_scopes = {}  # map scope uuid to scope spec dict from YAML file
 
 
 class TimestampEncoder(json.JSONEncoder):
@@ -155,8 +126,10 @@ class TimestampEncoder(json.JSONEncoder):
 
 
 def mk_conn(settings=settings):
-    return psycopg2.connect(host=settings.db_host, user=settings.db_user,
-                            password=settings.db_password, port=settings.db_port)
+    return psycopg2.connect(
+        host=settings.db_host, user=settings.db_user, dbname=settings.db_name,
+        password=settings.db_password, port=settings.db_port,
+    )
 
 
 def get_conn(settings=settings):
@@ -233,7 +206,7 @@ def import_bootstrap(bootstrap_path, conn):
         accountids = []
         for account in accounts:
             roles = sum(ROLES[r] for r in account.get('roles', ()))
-            acc_record = {'subject': account['subject'], 'roles': roles, 'group': account.get('group')}
+            acc_record = {'subject': account['subject'], 'roles': roles}
             accountid = db_update_account(cur, acc_record)
             accountids.append(accountid)
             db_clear_delegates(cur, accountid)
@@ -245,113 +218,6 @@ def import_bootstrap(bootstrap_path, conn):
             db_filter_publickeys(cur, accountid, lambda keyid, *_: keyid in keyids)
         db_filter_accounts(cur, lambda accountid, *_: accountid in accountids)
         conn.commit()
-
-
-def _evaluate_version(version, scope_results):
-    """evaluate the results for `version` and return the canonical JSON output"""
-    target_results = {
-        tname: {
-            'testcases': tc_ids,
-            'result': evaluate(scope_results, tc_ids),
-        }
-        for tname, tc_ids in version['targets'].items()
-    }
-    return {
-        '_idx': version['_idx'],
-        'result': target_results['main']['result'],
-        'targets': target_results,
-        'tc_target': version['tc_target'],
-        'validity': version['validity'],
-    }
-
-
-def _evaluate_scope(spec, scope_results, include_drafts=False):
-    """evaluate the results for `scope` and return the canonical JSON output"""
-    testcases = spec['testcases']
-    versions = spec['versions']
-    version_results = {
-        vname: _evaluate_version(version, scope_results)
-        for vname, version in versions.items()
-        if version['_explicit_validity']
-    }
-    winner = None  # first passed version that's not a draft
-    result = -1
-    passed = []
-    relevant = []
-    # assumption: versions are listed in spec in descending order recency
-    # first the drafts, then effective, then warn, then the rest
-    for vname, version_result in version_results.items():
-        if version_result['validity'] == 'draft' and not include_drafts:
-            continue
-        relevant.append(vname)
-        result = version_result['result']
-        if result != -1:
-            passed.append(vname)
-            if version_result['validity'] != 'draft':
-                winner = vname
-                break
-    # only list testcases that occur in any relevant version
-    relevant_testcases = set()
-    for vname in relevant:
-        for tc_ids in versions[vname]['targets'].values():
-            relevant_testcases.update(tc_ids)
-    return {
-        'name': spec['name'],
-        'testcases': testcases,
-        'results': scope_results,
-        'buckets': {
-            # sort testcase that occur any main target on top of those that don't
-            res: sorted(tc_ids, key=lambda tc_id: (not testcases[tc_id]['attn'], tc_id))
-            for res, tc_ids in eval_buckets(scope_results, relevant_testcases).items()
-        },
-        'versions': version_results,
-        'relevant': relevant,
-        'result': result,
-        'passed': passed,
-        'passed_str': ', '.join([
-            vname + ASTERISK_LOOKUP[version_results[vname]['validity']]
-            for vname in passed
-        ]),
-        'best_passed': None if winner is None else version_results[winner]['_idx'],
-        'validity': 'deprecated' if winner is None else version_results[winner]['validity'],
-    }
-
-
-def _update_lookup(spec, target_dict):
-    """Create entries in a lookup mapping for each testcase that occurs in this scope.
-
-    This mapping from pairs (scope uuid, testcase id) to testcase facilitates
-    evaluating result sets from database queries a great deal, because then just one lookup operation
-    tells us whether a result row can be associated with any known testcase, and if so, whether the
-    result is still valid (looking at the testcase's lifetime).
-
-    In the future, the mapping could even be simplified by deriving a unique id from each pair that
-    could then be stored (redundantly) in a dedicated database column, and the mapping could be from
-    just one id (instead of a pair) to testcase.
-    """
-    scope_uuid = spec['uuid']
-    for tc_id, testcase in spec['testcases'].items():
-        target_dict[(scope_uuid, tc_id)] = testcase
-
-
-def import_cert_yaml(yaml_path, target_dict):
-    yaml = ruamel.yaml.YAML(typ='safe')
-    with open(yaml_path, "r") as fileobj:
-        spec = load_spec(yaml.load(fileobj.read()))
-    annotate_validity(spec['timeline'], spec['versions'], date.today())
-    target_dict[spec['uuid']] = spec
-    _update_lookup(spec, target_dict)
-
-
-def import_cert_yaml_dir(yaml_path, target_dict):
-    for fn in sorted(os.listdir(yaml_path)):
-        if fn.startswith('scs-') and fn.endswith('.yaml'):
-            import_cert_yaml(os.path.join(yaml_path, fn), target_dict)
-
-
-def get_scopes():
-    """returns the scopes dict"""
-    return _scopes
 
 
 def import_templates(template_dir, env, templates):
@@ -408,7 +274,7 @@ async def get_reports(
     else:
         check_role(account, subject, ROLES['read_any'])
     with conn.cursor() as cur:
-        return db_get_reports(cur, subject, limit, skip)
+        return db_get_reports(cur, limit, skip)
 
 
 @app.get("/reports/{report_uuid}")
@@ -418,12 +284,14 @@ async def get_report(
     report_uuid: str,
 ):
     with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
+        reports = db_get_report(cur, report_uuid)
+    if not reports:
         raise HTTPException(status_code=404)
-    spec = specs[0]
-    check_role(account, spec['subject'], ROLES['read_any'])
-    return Response(content=json.dumps(spec, indent=2), media_type="application/json")
+    report = reports[0]
+    # NOTE report can cover multiple subjects!
+    # for the time being, just go ahead; this is authenticated after all
+    # check_role(account, spec['subject'], ROLES['read_any'])
+    return Response(content=json.dumps(report, indent=2), media_type="application/json")
 
 
 @app.post("/reports")
@@ -432,18 +300,19 @@ async def post_report(
     account: Annotated[tuple[str, str], Depends(auth)],
     conn: Annotated[connection, Depends(get_conn)],
 ):
-    # TODO this endpoint handles almost all user input, so check thoroughly and generate nice errors!
     # check_role call further below because we need the subject from the document
-    # (we could expect the subject in the path or query and then later only check equality)
     content_type = request.headers['content-type']
     if content_type not in ('application/x-signed-yaml', 'application/x-signed-json'):
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/415
         raise HTTPException(status_code=415, detail="Unsupported Media Type")
 
-    auth_subject, _ = account
+    allowed_subjects = ()  # meaning: don't check this
+    auth_subject, present_roles = account
     with conn.cursor() as cur:
         keys = db_get_keys(cur, auth_subject)
-        delegation_subjects = db_find_subjects(cur, auth_subject)
+        if present_roles & ROLES['append_any'] == 0:
+            delegation_subjects = db_find_subjects(cur, auth_subject)
+            allowed_subjects = {auth_subject} | set(delegation_subjects)
 
     body = await request.body()
     body_text = body.decode("utf-8")
@@ -473,97 +342,64 @@ async def post_report(
     if not documents:
         raise HTTPException(status_code=200, detail="empty reports")
 
-    allowed_subjects = {auth_subject} | set(delegation_subjects)
     for document in documents:
-        check_role(account, document['subject'], ROLES['append_any'])
-        if document['subject'] not in allowed_subjects:
+        missing_fields = [key for key in ('creator', 'attestations', 'uuid', 'log') if key not in document]
+        if missing_fields:
+            raise HTTPException(status_code=400, detail=f"report fields missing: {missing_fields}")
+
+    if allowed_subjects:
+        all_subjects = {
+            attestation['subject']
+            for document in documents
+            for attestation in document['attestations']
+        }
+        if not all_subjects <= allowed_subjects:
             raise HTTPException(status_code=401, detail="delegation problem?")
 
     with conn.cursor() as cur:
         for document, json_text in zip(documents, json_texts):
-            rundata = document['run']
-            uuid, subject, checked_at = rundata['uuid'], document['subject'], document['checked_at']
-            scopeuuid = document['spec']['uuid']
+            uuid = document['uuid']
             try:
-                reportid = db_insert_report(cur, uuid, checked_at, subject, json_text)
+                reportid = db_insert_report(cur, uuid, json_text)
             except UniqueViolation:
-                raise HTTPException(status_code=409, detail="Conflict: report already present")
-            if 'versions' not in document:
-                # If this key is missing, this means we have a newer-style report that doesn't redundantly list
-                # results per version. One reason for this change is that the meaning of a testcase identifier
-                # no longer depends on the scope version, and we can quite simply read off the results from the
-                # invocations. -- Use the dummy version '*' as long as the db schema still expects a version.
-                document['versions'] = {'*': {
-                    tc_id: {'result': result, 'invocation': inv_id}
-                    for inv_id, invocation in document['run']['invocations'].items()
-                    for tc_id, result in invocation['results'].items()
-                }}
-            for version, vdata in document['versions'].items():
-                for check, rdata in vdata.items():
-                    result = rdata['result']
-                    approval = 1 == result  # pre-approve good result
-                    db_insert_result2(cur, checked_at, subject, scopeuuid, version, check, result, approval, reportid)
+                raise HTTPException(status_code=409, detail=f"Conflict: report {uuid} already present")
+            for attestation in document['attestations']:
+                db_insert_attestation(cur, reportid, attestation)
     conn.commit()
 
 
-def convert_result_rows_to_dict2(
-    rows, scopes_lookup, grace_period_days=0, scopes=(), subjects=(), include_report=False, include_drafts=False,
-):
-    """evaluate all versions occurring in query result `rows`, returning canonical JSON representation"""
-    now = datetime.now()
-    if grace_period_days:
-        now -= timedelta(days=grace_period_days)
-    # collect result per subject/scope/version
-    preliminary = defaultdict(lambda: defaultdict(dict))  # subject -> scope
-    missing = set()
-    for subject, scope_uuid, _, testcase_id, result, checked_at, report_uuid in rows:
-        testcase = scopes_lookup.get((scope_uuid, testcase_id))
-        if not testcase:
-            # it can be False (testcase is known but version too old) or None (testcase not known)
-            # only report the latter case
-            if testcase is None:
-                missing.add((scope_uuid, testcase_id))
-            continue
-        # drop value if too old
-        lifetime = testcase.get('lifetime')  # leave None if not present; to be handled by add_period
-        if now >= add_period(checked_at, lifetime):
-            continue
-        # don't use outdated value (FIXME only necessary as long as version column still in db!)
-        tc_result = preliminary[subject][scope_uuid].get(testcase_id, {})
-        if tc_result.get('checked_at', checked_at) > checked_at:
-            continue
-        tc_result.update(result=result, checked_at=checked_at)
-        if include_report:
-            tc_result.update(report=report_uuid)
-        preliminary[subject][scope_uuid][testcase_id] = tc_result
-    if missing:
-        logger.warning('missing objects: ' + ', '.join(repr(x) for x in missing))
-    # make sure the requested subjects and scopes are present (facilitates writing jinja2 templates)
-    for subject in subjects:
-        for scope in scopes:
-            _ = preliminary[subject][scope]
-    return {
-        subject: {
-            scope_uuid: _evaluate_scope(scopes_lookup[scope_uuid], scope_result, include_drafts=include_drafts)
-            for scope_uuid, scope_result in subject_result.items()
+def group_attestations(rows, subjects=()):
+    """collect rows from db query in dict: subject -> object_ -> attestation"""
+    # collect result per subject
+    coll = defaultdict(dict)
+    for guid, timestamp, subject, predicate, object_, report_uuid in rows:
+        coll[subject][object_] = {
+            'guid': guid,
+            'timestamp': timestamp,
+            'subject': subject,
+            'predicate': predicate,
+            'object': object_,
+            'report': report_uuid,
         }
-        for subject, subject_result in preliminary.items()
-    }
+    # make sure the requested subjects are present (facilitates writing jinja2 templates)
+    for subject in subjects:
+        _ = coll[subject]
+    return coll
 
 
 @app.get("/status")
 async def get_status(
     request: Request,
     conn: Annotated[connection, Depends(get_conn)],
-    subject: str = None, scopeuuid: str = None,
+    subject: str = None, testcase: str = None,
 ):
     accept = request.headers['accept']
     if 'application/json' not in accept and '*/*' not in accept:
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/406
         raise HTTPException(status_code=406, detail="client needs to accept application/json")
     with conn.cursor() as cur:
-        rows2 = db_get_relevant_results2(cur, subject, scopeuuid, approved_only=False)
-    return convert_result_rows_to_dict2(rows2, get_scopes(), include_report=True)
+        rows = db_get_relevant_attestations(cur, subject, object_=testcase)
+    return group_attestations(rows)
 
 
 def _build_report_url(base_url, report, *args, **kwargs):
@@ -571,8 +407,8 @@ def _build_report_url(base_url, report, *args, **kwargs):
         return f"{base_url}reports/{report}"
     report_page = 'report_full' if kwargs.get('full') else 'report'
     url = f"{base_url}page/{report_page}/{report}"
-    if len(args) == 2:  # version, testcase_id --> add corresponding fragment specifier
-        url += f"#{args[1]}"  # version no longer relevant
+    if args:
+        url += f"#{args[0]}"  # guid
     return url
 
 
@@ -581,10 +417,9 @@ def render_view(view, view_type, detail_page='detail', base_url='/', title=None,
     stage1 = stage2 = view[view_type]
     if view_type is ViewType.page:
         stage1 = view[ViewType.fragment]
-    def scope_url(uuid): return f"{base_url}page/scope/{uuid}"  # noqa: E306,E704
-    def detail_url(subject, scope): return f"{base_url}page/{detail_page}/{subject}/{scope}"  # noqa: E306,E704
+    def detail_url(subject, object_): return f"{base_url}page/{detail_page}/{subject}/{object_}"  # noqa: E306,E704
     def report_url(report, *args, **kwargs): return _build_report_url(base_url, report, *args, **kwargs)  # noqa: E306,E704
-    fragment = templates_map[stage1].render(base_url=base_url, detail_url=detail_url, report_url=report_url, scope_url=scope_url, **kwargs)
+    fragment = templates_map[stage1].render(base_url=base_url, detail_url=detail_url, report_url=report_url, **kwargs)
     if view_type != ViewType.markdown and stage1.endswith('.md'):
         fragment = markdown(fragment, extensions=['extra'])
     if stage1 != stage2:
@@ -594,21 +429,43 @@ def render_view(view, view_type, detail_page='detail', base_url='/', title=None,
 
 def _redact_report(report):
     """remove all lines from script output in `report` that are not directly linked to any testcase"""
-    if 'run' not in report or 'invocations' not in report['run']:
-        return
-    for invdata in report['run']['invocations'].values():
-        stdout = invdata.get('stdout', [])
-        redacted = [line for line in stdout if line.rsplit(': ', 1)[-1] in ('PASS', 'ABORT', 'FAIL')]
-        if len(redacted) != len(stdout):
-            redacted.insert(0, '(the following has been redacted)')
-            invdata['stdout'] = redacted
-            invdata['redacted'] = True
-        stderr = invdata.get('stderr', [])
-        redacted = [line for line in stderr if line[:6] in ('WARNIN', 'ERROR:')]
-        if len(redacted) != len(stderr):
-            redacted.insert(0, '(the following has been redacted)')
-            invdata['stderr'] = redacted
-            invdata['redacted'] = True
+    log = report['log']
+    # don't do list comprehension here because it would restrict the logic
+    # (e.g. hard to replace a batch of lines by a different batch of lines)
+    redacted = []
+    for line in log:
+        parts = line.split(': ', 1)
+        if len(parts) != 2:
+            continue
+        # don't redact 'official' error messages
+        # this can still leak information and should be changed
+        if parts[0] in ('WARNING', 'ERROR', 'CRITICAL'):
+            redacted.append(line)
+        # don't redact the line that states what testcase is now being tested
+        elif parts[0] in ('INFO', ) and parts[1][:3] in ('***', '+++'):
+            redacted.append(line)
+    report['log'] = redacted
+    if len(redacted) != len(log):
+        report['unredacted'] = log
+
+
+def _augment_report(report):
+    attestations = {a['guid']: a for a in report['attestations']}
+    log = []
+    for line in report.get('log', ()):
+        if line.startswith('INFO: *** '):
+            guid = line.split()[-1][1:-1]  # final part is "($GUID)"
+            a = attestations.get(guid)
+            if a is not None:
+                a['_inlog'] = True
+                line = f'INFO: *** {a["subject"]}/{a["object"]}: {a["predicate"].upper()} ({a["guid"]})'
+        log.append(line)
+    report['log'] = log
+    for key, attachment in report.get('attachments', {}).items():
+        a = attestations.get(key)
+        if a is not None:
+            a['_inlog'] = True
+            attachment['_attestation'] = a
 
 
 @app.get("/{view_type}/report/{report_uuid}")
@@ -618,15 +475,29 @@ async def get_report_view(
     view_type: ViewType,
     report_uuid: str,
 ):
+    return _make_report_view(conn, view_type, report_uuid)
+
+
+def _make_report_view(conn, view_type, report_uuid, account=None):
     with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
+        reports = db_get_report(cur, report_uuid)
+    if not reports:
         raise HTTPException(status_code=404)
-    spec = specs[0]
-    _redact_report(spec)
+    report = reports[0]
+    _augment_report(report)
+    title = f'Report {report_uuid}'
+    if account is None:
+        _redact_report(report)
+        if 'unredacted' in report:
+            title += ' (redacted)'
+    else:
+        # NOTE report can cover multiple subjects!
+        # for the time being, just go ahead; this is authenticated after all
+        # check_role(account, report['subject'], ROLES['read_any'])
+        title += ' (full)'
     return render_view(
-        VIEW_REPORT, view_type, report=spec, base_url=settings.base_url,
-        title=f'Report {report_uuid} (redacted)',
+        VIEW_REPORT, view_type, report=report, base_url=settings.base_url,
+        title=title,
     )
 
 
@@ -638,75 +509,7 @@ async def get_report_view_full(
     view_type: ViewType,
     report_uuid: str,
 ):
-    with conn.cursor() as cur:
-        specs = db_get_report(cur, report_uuid)
-    if not specs:
-        raise HTTPException(status_code=404)
-    spec = specs[0]
-    check_role(account, spec['subject'], ROLES['read_any'])
-    return render_view(
-        VIEW_REPORT, view_type, report=spec, base_url=settings.base_url,
-        title=f'Report {report_uuid} (full)',
-    )
-
-
-def _resolve_group(cur, subject, prefix=GROUP_PREFIX):
-    group = subject.removeprefix(prefix)
-    if subject != group:
-        return group, db_get_group(cur, group)
-    return None, [subject]
-
-
-def _resolve_group_locally(groups, subject, prefix=GROUP_PREFIX):
-    group = subject.removeprefix(prefix)
-    if subject != group:
-        return group, list(groups[group])
-    return None, [subject]
-
-
-def _resolve_scope(scopeuuid):
-    return SCOPE_ALIASES.get(scopeuuid, scopeuuid)
-
-
-@app.get("/{view_type}/detail/{subject}/{scopeuuid}")
-async def get_detail(
-    request: Request,
-    conn: Annotated[connection, Depends(get_conn)],
-    view_type: ViewType,
-    subject: str,
-    scopeuuid: str,
-):
-    return _make_detail_view(conn, view_type, subject, scopeuuid)
-
-
-def _make_detail_view(conn, view_type, subject, scopeuuid, include_drafts=False):
-    scopeuuid = _resolve_scope(scopeuuid)
-    with conn.cursor() as cur:
-        group, subjects = _resolve_group(cur, subject)
-        rows2 = []
-        for subj in subjects:
-            rows2.extend(db_get_relevant_results2(cur, subj, scopeuuid))
-    results2 = convert_result_rows_to_dict2(
-        rows2, get_scopes(), include_report=True, include_drafts=include_drafts,
-        subjects=subjects, scopes=(scopeuuid, ),
-    )
-    title = f'Details for group {group}' if group else f'Details for subject {subject}'
-    if include_drafts:
-        title += ' (incl. drafts)'
-    return render_view(
-        VIEW_DETAIL, view_type, results=results2, base_url=settings.base_url, title=title,
-    )
-
-
-@app.get("/{view_type}/detail_full/{subject}/{scopeuuid}")
-async def get_detail_full(
-    request: Request,
-    conn: Annotated[connection, Depends(get_conn)],
-    view_type: ViewType,
-    subject: str,
-    scopeuuid: str,
-):
-    return _make_detail_view(conn, view_type, subject, scopeuuid, include_drafts=True)
+    return _make_report_view(conn, view_type, report_uuid, account=account)
 
 
 @app.get("/{view_type}/table")
@@ -720,15 +523,14 @@ async def get_table(
 
 def _make_table_view(conn, view_type, detail_page, include_drafts=False):
     with conn.cursor() as cur:
-        groups = db_get_groups(cur)
-        rows2 = db_get_relevant_results2(cur)
-    results2 = convert_result_rows_to_dict2(rows2, get_scopes(), include_drafts=include_drafts)
+        rows = db_get_relevant_attestations(cur)
+    results = group_attestations(rows)
     title = 'SCS compliance overview'
     if include_drafts:
         title += ' (incl. drafts)'
     return render_view(
-        VIEW_TABLE, view_type, results=results2, base_url=settings.base_url, detail_page=detail_page,
-        title=title, groups=groups,
+        VIEW_TABLE, view_type, results=results, base_url=settings.base_url, detail_page=detail_page,
+        title=title,
     )
 
 
@@ -741,65 +543,36 @@ async def get_table_full(
     return _make_table_view(conn, view_type, detail_page='detail_full', include_drafts=True)
 
 
-@app.get("/{view_type}/scope/{scopeuuid}")
-async def get_scope(
+@app.get("/{view_type}/detail/{subject}/{object_}")
+async def get_detail(
     request: Request,
     conn: Annotated[connection, Depends(get_conn)],
     view_type: ViewType,
-    scopeuuid: str,
+    subject: str, object_: str
 ):
-    scopeuuid = _resolve_scope(scopeuuid)
-    spec = get_scopes()[scopeuuid]
-    versions = spec['versions']
-    # use same order as in details view
-    relevant = [
-        name
-        for name, version in versions.items()
-        if version['_explicit_validity']
-    ]
-    modules_chart = {}
-    for name in relevant:
-        for include in versions[name]['include']:
-            module_id = include['module']['id']
-            row = modules_chart.get(module_id)
-            if row is None:
-                row = modules_chart[module_id] = {'module': include['module'], 'columns': {}}
-            row['columns'][name] = include
-    rows = sorted(list(modules_chart.values()), key=lambda row: row['module']['id'])
-    return render_view(VIEW_SCOPE, view_type, spec=spec, relevant=relevant, rows=rows, base_url=settings.base_url, title=spec['name'])
+    return _make_detail_view(conn, view_type, subject, object_)
 
 
-@app.get("/results")
-async def get_results(
-    request: Request,
-    account: Annotated[tuple[str, str], Depends(auth)],
-    conn: Annotated[connection, Depends(get_conn)],
-    approved: Optional[bool] = None, limit: int = 10, skip: int = 0,
-):
-    """get recent results, potentially filtered by approval status"""
-    check_role(account, roles=ROLES['read_any'])
+def _make_detail_view(conn, view_type, subject, object_, full=False):
     with conn.cursor() as cur:
-        return db_get_recent_results2(cur, approved, limit, skip, max_age_days=GRACE_PERIOD_DAYS)
+        rows = db_get_relevant_attestations(cur, subject=subject, object_=object_)
+    results = group_attestations(rows, subjects=(subject, ))
+    att = results[subject].get(object_, {})
+    reportuuid = att.get('report')
+    if not reportuuid:
+        raise HTTPException(status_code=404)
+    guid = att['guid']
+    return RedirectResponse(_build_report_url(settings.base_url, reportuuid, guid, full=full))
 
 
-@app.post("/results")
-async def post_results(
+@app.get("/{view_type}/detail_full/{subject}/{object_}")
+async def get_detail_full(
     request: Request,
-    account: Annotated[tuple[str, str], Depends(auth)],
     conn: Annotated[connection, Depends(get_conn)],
+    view_type: ViewType,
+    subject: str, object_: str
 ):
-    """post approvals to this endpoint"""
-    check_role(account, roles=ROLES['approve'])
-    content_type = request.headers['content-type']
-    if content_type not in ('application/json', ):
-        raise HTTPException(status_code=500, detail="Unsupported content type")
-    body = await request.body()
-    document = json.loads(body.decode("utf-8"))
-    records = [document] if isinstance(document, dict) else document
-    with conn.cursor() as cur:
-        for record in records:
-            db_patch_approval2(cur, record)
-    conn.commit()
+    return _make_detail_view(conn, view_type, subject, object_, full=True)
 
 
 @app.get("/healthz")
@@ -818,69 +591,26 @@ async def get_healthz(request: Request):
     return Response()  # empty response with status 200
 
 
-@pass_context
-def pick_filter(ctx, results, scopeuuid, *subjects):
-    """Jinja filter to pick scope results from `results` for given `subject` and `scope`"""
-    scopeuuid = _resolve_scope(scopeuuid)
-    # simple case (backwards compatible): precisely one subject
-    if len(subjects) == 1:
-        group, subjects = _resolve_group_locally(ctx['groups'], subjects[0])
-        if not group:
-            return results.get(subjects[0], {}).get(scopeuuid, {})
-    # generalized case: multiple subjects
-    # in this case, drop None
-    rs = [results.get(subject, {}).get(scopeuuid, {}) for subject in subjects]
-    return [r for r in rs if r is not None]
-
-
-NIL = object()  # the version in question does not have a result
-# used to sort multiple versions according to the "goodness" of their result
-RESULT_SCORE = {
-    -1: 0,
-    None: 1,
-    NIL: 2,  # NIL and None are basically the same, but prefer None because it has more info
-    0: 3,
-    1: 4,
-}
 COLOR_MAP = {
-    -1: '🛑',  # fail
-    None: '🟧',  # missing
-    0: '✅*',  # inconclusive
-    1: '✅',  # pass
+    'fail': '🛑',
+    'miss': '❓',
+    'dnf': '❔',
+    'pass': '✅',
 }
 
 
-def summary_filter(scope_results):
-    """Jinja filter to construct summary from `scope_results`"""
+def summary_filter(attestation):
+    """Jinja filter to construct summary from `attestation`"""
     # be prepared for empty dicts here because they are created to avoid KeyError in jinja2
-    if not isinstance(scope_results, dict):
-        # new generalized case: "aggregate" results for multiple subjects
-        # simplified computation: just select the worst subject to represent the group
-        scope_results = min(
-            scope_results,
-            default={},
-            key=lambda sr: RESULT_SCORE[sr.get('result', NIL)],
-        )
-    if not scope_results:
-        return '🛑 –'
-    result = scope_results['result']
-    color = COLOR_MAP[result]
-    # if the result is not pass anyway, deduct points if the version is outdated
-    # (this case should happen very rarely because we usually don't consider those)
-    if result != -1:
-        validity = scope_results['validity']
-        if validity == 'warn':
-            color = '🟧'
-        elif validity == 'deprecated':
-            color = '🛑'
-    passed_str = scope_results['passed_str'] or '–'
-    return f'{color} {passed_str}'
+    if not attestation:
+        return '❓'
+    return COLOR_MAP.get(attestation['predicate'], '❓')
 
 
 def verdict_check_filter(value):
     """Jinja filter to turn a canonical result value into a symbolic verdict (✔, ⚠, or ✘)"""
     # be fault-tolerant here and turn every non-canonical value into a MISS
-    return {1: '✔', -1: '✘'}.get(value, '⚠')
+    return {'pass': '✔', 'fail': '✘'}.get(value, '⚠')
 
 
 def short_isodate_filter(value):
@@ -891,11 +621,6 @@ def short_isodate_filter(value):
 def reload_static_config(*args, do_ensure_schema=False):
     # allow arbitrary arguments so it can readily be used as signal handler
     logger.info("loading static config")
-    scopes = {}
-    import_cert_yaml_dir(settings.yaml_path, scopes)
-    # import successful: only NOW destructively update global _scopes
-    _scopes.clear()
-    _scopes.update(scopes)
     import_templates(settings.template_path, env=env, templates=templates_map)
     validate_templates(templates=templates_map)
     with mk_conn(settings=settings) as conn:
@@ -907,11 +632,9 @@ def reload_static_config(*args, do_ensure_schema=False):
 if __name__ == "__main__":
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     env.filters.update(
-        pick=pick_filter,
         summary=summary_filter,
         verdict_check=verdict_check_filter,
         markdown=markdown,
-        validity_symbol=ASTERISK_LOOKUP.get,
         short_isodate=short_isodate_filter,
     )
     reload_static_config(do_ensure_schema=True)

@@ -1,48 +1,69 @@
 ## General info
 
-- uuid: [{{ report.run.uuid }}]({{ report_url(report.run.uuid, download=True) }})
-- subject: {{ report.subject }}
-- scope: [{{ report.spec.name }}]({{ scope_url(report.spec.uuid) }})
-- checked at: {{ report.checked_at }}
-- variable assignment: {% set comma = joiner(", ") %}{% for key, value in report.run.assignment.items() -%}{{comma()}}`{{ key }}`=`{{ value }}`{% endfor %}
+{% set uuid = report.uuid -%}
+- uuid: [{{ uuid }}]({{ report_url(uuid, download=True) }})
+- creator: {{ report.creator }}
 
-{% for invid, invdata in report.run.invocations.items() %}
-## Invocation {{invid}} {: #{{ invid }} }
+## Attestations
 
-- cmd: `{{ invdata.cmd }}`
-- rc: {{ invdata.rc }}
-- channel summary
-{%- for channel in ('critical', 'error', 'warning') %}
-{%- if invdata[channel] %}
-    - **{{ channel }}: {{ invdata[channel] }}**
-{%- else %}
-    - {{ channel }}: –
-{%- endif %}
-{%- endfor %}
-- results
-{%- for resultid, result in invdata.results.items() %}
-    - {{ resultid }}: {{ result | verdict_check }}
-      {: #{{ resultid }} }
-{%- endfor %}
+| subject/object | predicate | evidence | guid |
+|---|---|---|---|
+{% for a in report.attestations -%}
+| {{ a.subject }}/{{ a.object }} | {{ a | summary }} {{ a.predicate }} | {# #}
+    {%- if a._inlog -%}
+    [see below](#{{ a.guid }})
+    {%- else -%}
+    (not provided)
+    {: #{{ a.guid }} }
+    {%- endif -%}
+{# #} | {{ a.guid }} |
+{% endfor%}
 
-{% if invdata.stdout -%}
-<details><summary>Captured stdout</summary>
-```text
-{{ '\n'.join(invdata.stdout) }}
+{% if report.attachments -%}
+## Attachments
+
+{% for id_, attachment in report.attachments.items() %}
+{% set a0 = attachment._attestation -%}
+{% if a0 -%}
+### {{ a0.subject }}/{{ a0.object}}: {{ a0.predicate }} ({{id_}}) {: #{{id_}} }
+
+| subject/object | predicate | evidence |
+|---|---|---|
+{% for pred in ('fail', 'miss', 'dnf', 'pass') -%}
+{% set bucket = attachment[pred] -%}
+{% for a in bucket -%}
+| [{{ a.subject }}/{{ a.object }}](canonical-url-for/{{ a.object }}) {# -#}
+| {{ a | summary }} {{ a.predicate }} | {# #}
+    {%- if a.report -%}
+    [{{ a.timestamp | short_isodate }}]({{ report_url(a.report, a.guid) }}) { title="{{ a.report }} {{ a.timestamp }}" }
+    {%- elif a.guid -%}
+    [this report](#{{a.guid}})
+    {%- endif -%}
+{# #} |
+{% endfor %}{# attachment -#}
+{% endfor %}{# categories #}
+{%- else %}{# is attestation -#}
+### {{id_}} {: #{{id_}} }
+
+Unknown attachment type.
+
 ```
-</details>
-{%- endif %}
-
-{% if invdata.stderr -%}
-<details {% if invdata.warning or invdata.error or invdata.critical %}open{% endif %}><summary>Captured stderr</summary>
-{%- for line in invdata.stderr %}
-<pre class="line">{% if line.split(':', 1)[0].lower() in ('warning', 'error', 'critical') %}{{ '<strong>' + line + '</strong>' }}{% else %}{{ line }}{% endif %}</pre>
+{{ attachment }}
+```
+{%- endif %}{# is attestation #}
 {%- endfor %}
-</details>
 {%- endif %}
 
-{% if invdata.redacted -%}
-» [show unredacted (requires login) 🔒]({{report_url(report.run.uuid, full=True)}}#{{ invid }})
-{%- endif %}
+{% if report.log -%}
+## Log{%if redacted %} (redacted){%endif%} {: #log }
+{% for line in report.log %}
+- {% if line.split(':', 1)[0].lower() in ('warning', 'error', 'critical') %}**_`{{line}}`_**{%
+  elif line.startswith('INFO: *** ') %}{% if 'PASS' in line %} `{{line}}` {% else %} **`{{line}}`** {% endif %} 
+  {: #{{line.split()[-1][1:-1]}} }{%
+  else %}{% for line0 in line.splitlines() %}`{{line0}}`{%if not loop.last%}<br>{%endif%}{% endfor %}{% endif %}
+{%- endfor %}
 
-{% endfor %}
+{% if report.unredacted -%}
+» [show unredacted (requires login) 🔒]({{report_url(uuid, full=True)}}#{{ invid }})
+{% endif %}
+{% endif %}
