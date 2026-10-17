@@ -5,10 +5,54 @@
 - creator: {{ report.creator }}
 
 ## Attestations
-{% for a in report.attestations %}
-- {{ a.subject }}/{{ a.object }}: {{ a.predicate | verdict_check }} {% if a._inlog %}([{{ a.guid }}](#{{ a.guid }})){% else %}({{ a.guid }})
-  {: #{{ a.guid }} } {% endif %}
-{%- endfor%}
+
+| subject/object | predicate | evidence | guid |
+|---|---|---|---|
+{% for a in report.attestations -%}
+| {{ a.subject }}/{{ a.object }} | {{ a | summary }} {{ a.predicate }} | {# #}
+    {%- if a._inlog -%}
+    [see below](#{{ a.guid }})
+    {%- else -%}
+    (not provided)
+    {: #{{ a.guid }} }
+    {%- endif -%}
+{# #} | {{ a.guid }} |
+{% endfor%}
+
+{% if report.attachments -%}
+## Attachments
+
+{% for id_, attachment in report.attachments.items() %}
+{% set a0 = attachment._attestation -%}
+{% if a0 -%}
+### {{ a0.subject }}/{{ a0.object}}: {{ a0.predicate }} ({{id_}}) {: #{{id_}} }
+
+| subject/object | predicate | evidence |
+|---|---|---|
+{% for pred in ('fail', 'miss', 'dnf', 'pass') -%}
+{% set bucket = attachment[pred] -%}
+{% for a in bucket -%}
+| [{{ a.subject }}/{{ a.object }}](canonical-url-for/{{ a.object }}) {# -#}
+| {{ a | summary }} {{ a.predicate }} | {# #}
+    {%- if a.report -%}
+    [{{ a.timestamp | short_isodate }}]({{ report_url(a.report, a.guid) }}) { title="{{ a.report }} {{ a.timestamp }}" }
+    {%- elif a.guid -%}
+    [this report](#{{a.guid}})
+    {%- endif -%}
+{# #} |
+{% endfor %}{# attachment -#}
+{% endfor %}{# categories #}
+{%- else %}{# is attestation -#}
+### {{id_}} {: #{{id_}} }
+
+Unknown attachment type.
+
+```
+{{ attachment }}
+```
+{%- endif %}{# is attestation #}
+{%- endfor %}
+{%- endif %}
 
 {% if report.log -%}
 ## Log{%if redacted %} (redacted){%endif%} {: #log }

@@ -407,8 +407,8 @@ def _build_report_url(base_url, report, *args, **kwargs):
         return f"{base_url}reports/{report}"
     report_page = 'report_full' if kwargs.get('full') else 'report'
     url = f"{base_url}page/{report_page}/{report}"
-    if len(args) == 2:  # version, testcase_id --> add corresponding fragment specifier
-        url += f"#{args[1]}"  # version no longer relevant
+    if args:
+        url += f"#{args[0]}"  # guid
     return url
 
 
@@ -461,6 +461,11 @@ def _augment_report(report):
                 line = f'INFO: *** {a["subject"]}/{a["object"]}: {a["predicate"].upper()} ({a["guid"]})'
         log.append(line)
     report['log'] = log
+    for key, attachment in report.get('attachments', {}).items():
+        a = attestations.get(key)
+        if a is not None:
+            a['_inlog'] = True
+            attachment['_attestation'] = a
 
 
 @app.get("/{view_type}/report/{report_uuid}")
@@ -535,6 +540,38 @@ async def get_table_full(
     view_type: ViewType,
 ):
     return _make_table_view(conn, view_type, detail_page='detail_full', include_drafts=True)
+
+
+@app.get("/{view_type}/detail/{subject}/{object_}")
+async def get_detail(
+    request: Request,
+    conn: Annotated[connection, Depends(get_conn)],
+    view_type: ViewType,
+    subject: str, object_: str
+):
+    return _make_detail_view(conn, view_type, subject, object_)
+
+
+def _make_detail_view(conn, view_type, subject, object_, full=False):
+    with conn.cursor() as cur:
+        rows = db_get_relevant_attestations(cur, subject=subject, object_=object_)
+    results = group_attestations(rows, subjects=(subject, ))
+    att = results[subject].get(object_, {})
+    reportuuid = att.get('report')
+    if not reportuuid:
+        raise HTTPException(status_code=404)
+    guid = att['guid']
+    return RedirectResponse(_build_report_url(settings.base_url, reportuuid, guid, full=full))
+
+
+@app.get("/{view_type}/detail_full/{subject}/{object_}")
+async def get_detail_full(
+    request: Request,
+    conn: Annotated[connection, Depends(get_conn)],
+    view_type: ViewType,
+    subject: str, object_: str
+):
+    return _make_detail_view(conn, view_type, subject, object_, full=True)
 
 
 @app.get("/healthz")
