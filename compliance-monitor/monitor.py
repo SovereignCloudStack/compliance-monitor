@@ -391,14 +391,14 @@ def group_attestations(rows, subjects=()):
 async def get_status(
     request: Request,
     conn: Annotated[connection, Depends(get_conn)],
-    subject: str = None,
+    subject: str = None, testcase: str = None,
 ):
     accept = request.headers['accept']
     if 'application/json' not in accept and '*/*' not in accept:
         # see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/406
         raise HTTPException(status_code=406, detail="client needs to accept application/json")
     with conn.cursor() as cur:
-        rows = db_get_relevant_attestations(cur, subject)
+        rows = db_get_relevant_attestations(cur, subject, object_=testcase)
     return group_attestations(rows)
 
 

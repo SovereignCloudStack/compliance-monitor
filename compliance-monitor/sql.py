@@ -326,7 +326,7 @@ def db_insert_attestation(cur: cursor, reportid, record: dict):
     return resultid
 
 
-def db_get_relevant_attestations(cur: cursor, subject=None):
+def db_get_relevant_attestations(cur: cursor, subject=None, object_=None):
     """
     For each combination of subject/object, get the most recent predicate.
     If a `subject` is given, only return attestations for subjects of the form
@@ -343,6 +343,7 @@ def db_get_relevant_attestations(cur: cursor, subject=None):
     ''').format(
         filter_condition=make_where_clause(
             None if subject is None else sql.SQL("attestation.subject ~ (%(subject)s || '(-.+)?')"),
+            None if object_ is None else sql.SQL("attestation.object ~ (%(object)s || '(-.+)?')"),
         ),
-    ), {"subject": subject})
+    ), {"subject": subject, "object": object_})
     return cur.fetchall()
