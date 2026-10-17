@@ -555,7 +555,7 @@ async def get_healthz(request: Request):
 
 COLOR_MAP = {
     'fail': '🛑',
-    None: '❓',
+    'miss': '❓',
     'dnf': '❔',
     'pass': '✅',
 }
@@ -566,7 +566,7 @@ def summary_filter(attestation):
     # be prepared for empty dicts here because they are created to avoid KeyError in jinja2
     if not attestation:
         return '🛑'
-    return COLOR_MAP[attestation['result']]
+    return COLOR_MAP.get(attestation['predicate'], '❓')
 
 
 def verdict_check_filter(value):
