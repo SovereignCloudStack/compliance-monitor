@@ -488,7 +488,8 @@ def _make_report_view(conn, view_type, report_uuid, account=None):
     title = f'Report {report_uuid}'
     if account is None:
         _redact_report(report)
-        title += ' (redacted)'
+        if 'unredacted' in report:
+            title += ' (redacted)'
     else:
         # NOTE report can cover multiple subjects!
         # for the time being, just go ahead; this is authenticated after all
@@ -602,7 +603,7 @@ def summary_filter(attestation):
     """Jinja filter to construct summary from `attestation`"""
     # be prepared for empty dicts here because they are created to avoid KeyError in jinja2
     if not attestation:
-        return '🛑'
+        return '❓'
     return COLOR_MAP.get(attestation['predicate'], '❓')
 
 
