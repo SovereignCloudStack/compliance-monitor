@@ -154,6 +154,10 @@ Returns the current status of all subjects in JSON format.
 Query parameters:
 
 - `subject` (optional): restrict subject
+- `testcase` (optional): restrict object
+- `lifetime` (optional, one of 'day' or 'week'): cut off (mark 'miss') older results:
+    - 'day': cut off older than beginning of yesterday
+    - 'week': cut off older than beginning of last week
 
 ### GET /metrics/{subject}
 

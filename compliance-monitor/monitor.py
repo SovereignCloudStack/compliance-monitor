@@ -391,7 +391,7 @@ def group_attestations(rows, subjects=()):
 async def get_status(
     request: Request,
     conn: Annotated[connection, Depends(get_conn)],
-    subject: str = None, testcase: str = None,
+    subject: str = None, testcase: str = None, lifetime: str = None,
 ):
     accept = request.headers['accept']
     if 'application/json' not in accept and '*/*' not in accept:
@@ -399,7 +399,10 @@ async def get_status(
         raise HTTPException(status_code=406, detail="client needs to accept application/json")
     with conn.cursor() as cur:
         rows = db_get_relevant_attestations(cur, subject, object_=testcase)
-    return group_attestations(rows)
+    scores = group_attestations(rows)
+    if lifetime:
+        scores = prune_old_attestations(scores, lifetime)
+    return scores
 
 
 def _build_report_url(base_url, report, *args, **kwargs):
@@ -524,12 +527,12 @@ async def get_table(
 def _make_table_view(conn, view_type, detail_page, include_drafts=False):
     with conn.cursor() as cur:
         rows = db_get_relevant_attestations(cur)
-    results = group_attestations(rows)
+    scores = group_attestations(rows)
     title = 'SCS compliance overview'
     if include_drafts:
         title += ' (incl. drafts)'
     return render_view(
-        VIEW_TABLE, view_type, results=results, base_url=settings.base_url, detail_page=detail_page,
+        VIEW_TABLE, view_type, scores=scores, base_url=settings.base_url, detail_page=detail_page,
         title=title,
     )
 
@@ -599,6 +602,35 @@ COLOR_MAP = {
 }
 
 
+def prune_old_attestation(cutoff, attestation):
+    timestamp = attestation['timestamp']
+    if timestamp >= cutoff:
+        return attestation
+    # just override predicate with 'miss', in this case meaning 'outdated';
+    # the evidence (the report uuid) remains, so the date can be checked!
+    return {**attestation, 'predicate': 'miss'}
+
+
+def prune_old_attestations(scores, lifetime='week'):
+    now = datetime.now()
+    if lifetime == 'day':
+        # cut off older than beginning of yesterday
+        dt = now - timedelta(days=1)
+    elif lifetime == 'week':
+        # cut off older than beginning of last week
+        dt = now - timedelta(days=7 + now.weekday())
+    else:
+        raise NotImplementedError(f"lifetime '{lifetime}' not yet implemented")
+    cutoff = datetime(dt.year, dt.month, dt.day)
+    return defaultdict(dict, {
+        subject: {
+            object_: prune_old_attestation(cutoff, att)
+            for object_, att in subj_scores.items()
+        }
+        for subject, subj_scores in scores.items()
+    })
+
+
 def summary_filter(attestation):
     """Jinja filter to construct summary from `attestation`"""
     # be prepared for empty dicts here because they are created to avoid KeyError in jinja2
@@ -632,6 +664,7 @@ def reload_static_config(*args, do_ensure_schema=False):
 if __name__ == "__main__":
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
     env.filters.update(
+        prune_old_attestations=prune_old_attestations,
         summary=summary_filter,
         verdict_check=verdict_check_filter,
         markdown=markdown,

@@ -2,6 +2,7 @@
 we could of course iterate over results etc., but hardcode the table (except the actual results, of course)
 for the time being to have the highest degree of control
 -#}
+{% set results = scores | prune_old_attestations('day') %}
 {% set iaas_v5 = 'scs-0501-v5.1' -%}
 {% set iaas_v6 = 'scs-0501-v6' -%}
 {% set kaas_v1 = 'scs-0502-v1' -%}
