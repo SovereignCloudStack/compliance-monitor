@@ -5,10 +5,11 @@ from psycopg2.extensions import cursor, connection
 
 # list schema versions in ascending order
 SCHEMA_VERSION_KEY = 'version'
-SCHEMA_VERSIONS = ['v1', 'v2', 'v3', 'v4']
+SCHEMA_VERSIONS = ['v5']
 # use ... (Ellipsis) here to indicate that no default value exists (will lead to error if no value is given)
-ACCOUNT_DEFAULTS = {'subject': ..., 'api_key': ..., 'roles': ..., 'group': None}
+ACCOUNT_DEFAULTS = {'subject': ..., 'api_key': ..., 'roles': ...}
 PUBLIC_KEY_DEFAULTS = {'public_key': ..., 'public_key_type': ..., 'public_key_name': ...}
+ATTESTATION_DEFAULTS = {'guid': ..., 'subject': ..., 'object': ..., 'predicate': ..., 'timestamp': ...}
 
 
 class SchemaVersionError(Exception):
@@ -65,6 +66,11 @@ def db_ensure_schema_common(cur: cursor):
         subject text UNIQUE,
         roles integer
     );
+    CREATE TABLE IF NOT EXISTS delegation (
+        delegateid integer NOT NULL REFERENCES account ON DELETE CASCADE ON UPDATE CASCADE,
+        accountid integer NOT NULL REFERENCES account ON DELETE CASCADE ON UPDATE CASCADE,
+        UNIQUE (delegateid, accountid)
+    );
     CREATE TABLE IF NOT EXISTS apikey (
         apikeyid SERIAL PRIMARY KEY,
         apikeyhash text,
@@ -82,94 +88,57 @@ def db_ensure_schema_common(cur: cursor):
     CREATE TABLE IF NOT EXISTS report (
         reportid SERIAL PRIMARY KEY,
         reportuuid text UNIQUE,
-        checked_at timestamp,
-        subject text,
-        -- scopeid integer NOT NULL REFERENCES scope ON DELETE CASCADE ON UPDATE CASCADE,
-        -- let's omit the scope here because it is determined via the results, and it
-        -- is possible that future reports refer to multiple scopes
-        data jsonb,
-        rawformat text,
-        raw bytea
+        data jsonb
     );
     ''')
 
 
-def db_ensure_schema_v2(cur: cursor):
+def db_ensure_schema_v5(cur: cursor):
     db_ensure_schema_common(cur)
     cur.execute('''
-    -- make a way simpler version that doesn't put that much background knowledge into the schema
-    -- therefore let's hope the schema will be more robust against change
-    CREATE TABLE IF NOT EXISTS result2 (
+    ALTER TABLE account DROP COLUMN IF EXISTS "group";
+    ALTER TABLE report DROP COLUMN IF EXISTS subject;
+    ALTER TABLE report DROP COLUMN IF EXISTS checked_at;
+    CREATE TABLE IF NOT EXISTS attestation (
         resultid SERIAL PRIMARY KEY,
-        -- some Python code to show how simple it is to fill this from a yaml report
-        -- (using member access syntax instead of array access syntax for the dict fields)
-        -- for vname, vres in report.versions.items():
-        --    for tcid, tcres in vres.items():
-        checked_at timestamp NOT NULL,  -- = report.checked_at
-        subject text NOT NULL,          -- = report.subject
-        scopeuuid text NOT NULL,        -- = report.spec.uuid
-        version text NOT NULL,          -- = vname
-        testcase text NOT NULL,         -- = tcid
-        result int,                     -- = tcres.result
-        approval boolean,               -- = tcres.result == 1
-        -- the following is FYI only, for the most data is literally copied to this table
+        guid text NOT NULL,
+        timestamp timestamp NOT NULL,
+        subject text NOT NULL,
+        predicate text NOT NULL,  -- such as pass, dnf, fail
+        object text NOT NULL,     -- testcase id
         reportid integer NOT NULL REFERENCES report ON DELETE CASCADE ON UPDATE CASCADE
     );
     ''')
 
 
-def db_ensure_schema_v3(cur: cursor):
-    # v3 mainly extends v2, so we need v2 first
-    db_ensure_schema_v2(cur)
-    # We do alter the table "report" by dropping two columns, so these columns may have been created in vain
-    # if this database never really was on v2, but I hope dropping columns from an empty table is cheap
-    # enough, because I want to avoid having too many code paths here. We can remove these columns from
-    # create table once all databases are on v3.
+def db_upgrade_data_v4_v5(cur):
+    # move stuff over from result2 to attestation
+    # delete here for transaction safety
     cur.execute('''
-    ALTER TABLE report DROP COLUMN IF EXISTS raw;
-    ALTER TABLE report DROP COLUMN IF EXISTS rawformat;
-    DROP TABLE IF EXISTS invocation;  -- we forgot this for post-upgrade v2, can be dropped without harm
-    CREATE TABLE IF NOT EXISTS delegation (
-        delegateid integer NOT NULL REFERENCES account ON DELETE CASCADE ON UPDATE CASCADE,
-        accountid integer NOT NULL REFERENCES account ON DELETE CASCADE ON UPDATE CASCADE,
-        UNIQUE (delegateid, accountid)
-    );
-    ''')
-
-
-def db_ensure_schema_v4(cur: cursor):
-    # start from v3, do small alteration
-    db_ensure_schema_v3(cur)
-    cur.execute('''
-    ALTER TABLE account ADD COLUMN IF NOT EXISTS "group" text;
-    ''')
-
-
-def db_upgrade_data_v1_v2(cur):
-    # we are going to drop table result, but use delete anyway to have the transaction safety
-    cur.execute('''
-    INSERT INTO result2 (checked_at, subject, scopeuuid, version, testcase, result, approval, reportid)
+    INSERT INTO attestation (guid, timestamp, subject, predicate, object, reportid)
     SELECT
-        report.checked_at, report.subject,
-        scope.scopeuuid, version.version, "check".id,
-        result.result, result.approval, result.reportid
-    FROM result
+        -- these testcases don't have a GUID yet, but the following is unique
+        -- because reports at the time pertained to one subject only
+        reportuuid || '.' || testcase,
+        checked_at,
+        subject,
+        CASE result
+          WHEN 1 THEN 'pass'
+          WHEN 0 THEN 'dnf'
+          ELSE 'fail'
+        END,
+        testcase,
+        reportid
+    FROM result2
     NATURAL JOIN report
-    NATURAL JOIN "check"
-    NATURAL JOIN version
-    NATURAL JOIN scope
     ;
-    DELETE FROM result
+    DELETE FROM result2
     ;''')
 
 
-def db_post_upgrade_v1_v2(cur: cursor):
+def db_post_upgrade_v4_v5(cur: cursor):
     cur.execute('''
-    DROP TABLE IF EXISTS result;
-    DROP TABLE IF EXISTS "check";
-    DROP TABLE IF EXISTS standardentry;
-    DROP TABLE IF EXISTS version;
-    DROP TABLE IF EXISTS scope;
+    DROP TABLE IF EXISTS result2;
     ''')
 
 
@@ -197,31 +166,23 @@ def db_upgrade_schema(conn: connection, cur: cursor):
     while True:
         current = db_get_schema_version(cur)
         if current is None:
-            # this is an empty db, but it also used to be the case with v1
-            # I (mbuechse) made sure manually that the value v1 is set on running installations
-            db_ensure_schema_v4(cur)
-            db_set_schema_version(cur, 'v4')
+            # this is an empty db
+            db_ensure_schema_v5(cur)
+            db_set_schema_version(cur, 'v5')
             conn.commit()
             break  # Nothing more to do, we bootstrapped with the latest schema version
-        elif current == 'v1':
-            db_ensure_schema_v2(cur)
-            db_upgrade_data_v1_v2(cur)
-            db_set_schema_version(cur, 'v1-v2')
+        elif current == 'v4':
+            db_ensure_schema_v5(cur)
+            db_upgrade_data_v4_v5(cur)
+            db_set_schema_version(cur, 'v4-v5')
             conn.commit()
-        elif current == 'v1-v2':
-            db_post_upgrade_v1_v2(cur)
-            db_set_schema_version(cur, 'v2')
-            conn.commit()
-        elif current == 'v2':
-            db_ensure_schema_v3(cur)
-            db_set_schema_version(cur, 'v3')
-            conn.commit()
-        elif current == 'v3':
-            db_ensure_schema_v4(cur)
-            db_set_schema_version(cur, 'v4')
-            conn.commit()
+        elif current == 'v4-v5':
+            db_post_upgrade_v4_v5(cur)
+            db_set_schema_version(cur, 'v5')
         elif current >= SCHEMA_VERSIONS[-1]:  # bail if version is too new (but hope it's compatible)
             break
+        else:
+            raise RuntimeError('unknown schema version')
 
 
 def db_ensure_schema(conn: connection):
@@ -244,12 +205,11 @@ def db_ensure_schema(conn: connection):
 def db_update_account(cur: cursor, record: dict):
     sanitized = sanitize_record(record, ACCOUNT_DEFAULTS)
     cur.execute('''
-    INSERT INTO account (subject, roles, "group")
-    VALUES (%(subject)s, %(roles)s, %(group)s)
+    INSERT INTO account (subject, roles)
+    VALUES (%(subject)s, %(roles)s)
     ON CONFLICT (subject)
     DO UPDATE
-    SET roles = EXCLUDED.roles,
-    "group" = EXCLUDED."group"
+    SET roles = EXCLUDED.roles
     RETURNING accountid;''', sanitized)
     accountid, = cur.fetchone()
     return accountid
@@ -284,19 +244,6 @@ def db_find_subjects(cur: cursor, delegate):
     JOIN account b ON b.accountid = delegation.delegateid
     WHERE b.subject = %s;''', (delegate, ))
     return [row[0] for row in cur.fetchall()]
-
-
-def db_get_group(cur: cursor, group):
-    cur.execute('''SELECT subject FROM account WHERE "group" = %s;''', (group, ))
-    return [row[0] for row in cur.fetchall()]
-
-
-def db_get_groups(cur: cursor):
-    cur.execute('''SELECT subject, "group" FROM account WHERE "group" is not null and "group" != '';''')
-    groups = defaultdict(list)
-    for row in cur.fetchall():
-        groups[row[1]].append(row[0])
-    return groups
 
 
 def db_update_apikey(cur: cursor, accountid, apikey_hash):
@@ -351,95 +298,52 @@ def db_get_report(cur: cursor, report_uuid):
     return [row[0] for row in cur.fetchall()]
 
 
-def db_get_reports(cur: cursor, subject, limit, skip):
+def db_get_reports(cur: cursor, limit, skip):
     cur.execute(
-        sql.SQL("SELECT data FROM report {} LIMIT %(limit)s OFFSET %(skip)s;")
-        .format(make_where_clause(
-            None if not subject else sql.SQL('subject = %(subject)s'),
-        )),
-        {"subject": subject, "limit": limit, "skip": skip},
+        sql.SQL("SELECT data FROM report LIMIT %(limit)s OFFSET %(skip)s;"),
+        {"limit": limit, "skip": skip},
     )
     return [row[0] for row in cur.fetchall()]
 
 
-def db_insert_report(cur: cursor, uuid, checked_at, subject, json_text):
+def db_insert_report(cur: cursor, uuid, json_text):
     # this is an exception in that we don't use a record parameter (it's just not as practical here)
     cur.execute('''
-    INSERT INTO report (reportuuid, checked_at, subject, data)
-    VALUES (%s, %s, %s, %s)
-    RETURNING reportid;''', (uuid, checked_at, subject, json_text))
+    INSERT INTO report (reportuuid, data)
+    VALUES (%s, %s)
+    RETURNING reportid;''', (uuid, json_text))
     reportid, = cur.fetchone()
     return reportid
 
 
-def db_insert_result2(
-    cur: cursor, checked_at, subject, scopeuuid, version, testcase, result, approval, reportid
-):
-    # this is an exception in that we don't use a record parameter (it's just not as practical here)
+def db_insert_attestation(cur: cursor, reportid, record: dict):
+    sanitized = sanitize_record(record, ATTESTATION_DEFAULTS, reportid=reportid)
     cur.execute('''
-    INSERT INTO result2 (checked_at, subject, scopeuuid, version, testcase, result, approval, reportid)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    RETURNING resultid;''', (checked_at, subject, scopeuuid, version, testcase, result, approval, reportid))
+    INSERT INTO attestation (guid, timestamp, subject, predicate, object, reportid)
+    VALUES (%(guid)s, %(timestamp)s, %(subject)s, %(predicate)s, %(object)s, %(reportid)s)
+    RETURNING resultid;''', sanitized)
     resultid, = cur.fetchone()
     return resultid
 
 
-def db_get_relevant_results2(
-    cur: cursor,
-    subject=None, scopeuuid=None, version=None, approved_only=False,
-):
-    """for each combination of scope/version/check, get the most recent test result that is still valid"""
-    # find the latest result per subject/scopeuuid/version/checkid for this subject
+def db_get_relevant_attestations(cur: cursor, subject=None, object_=None):
+    """
+    For each combination of subject/object, get the most recent predicate.
+    If a `subject` is given, only return attestations for subjects of the form
+    `subject` (direct match) or `subject-...` (prefix with dash)
+    """
     # DISTINCT ON is a Postgres-specific construct that comes in very handy here :)
     cur.execute(sql.SQL('''
-    SELECT DISTINCT ON (subject, scopeuuid, version, testcase)
-    result2.subject, scopeuuid, version, testcase, result, result2.checked_at, report.reportuuid
-    FROM result2
-    JOIN report ON report.reportid = result2.reportid
+    SELECT DISTINCT ON (subject, object)
+    guid, timestamp, subject, predicate, object, report.reportuuid
+    FROM attestation
+    JOIN report ON report.reportid = attestation.reportid
     {filter_condition}
-    ORDER BY subject, scopeuuid, version, testcase, checked_at DESC;
+    ORDER BY subject, object, timestamp DESC;
     ''').format(
         filter_condition=make_where_clause(
-            sql.SQL('approval') if approved_only else None,
-            None if scopeuuid is None else sql.SQL('scopeuuid = %(scopeuuid)s'),
-            None if version is None else sql.SQL('version = %(version)s'),
-            None if subject is None else sql.SQL('result2.subject = %(subject)s'),
+            None if subject is None else sql.SQL("attestation.subject ~ (%(subject)s || '(-.+)?')"),
+            None if object_ is None else sql.SQL("attestation.object ~ (%(object)s || '(-.+)?')"),
         ),
-    ), {"subject": subject, "scopeuuid": scopeuuid, "version": version})
+    ), {"subject": subject, "object": object_})
     return cur.fetchall()
-
-
-def db_get_recent_results2(cur: cursor, approved, limit, skip, max_age_days=None):
-    """list recent test results without grouping by scope/version/check"""
-    columns = ('reportuuid', 'subject', 'checked_at', 'scopeuuid', 'version', 'check', 'result', 'approval')
-    cur.execute(sql.SQL('''
-    SELECT report.reportuuid, result2.subject, result2.checked_at, result2.scopeuuid, result2.version
-    , result2.testcase, result2.result, result2.approval
-    FROM result2
-    NATURAL JOIN report
-    {where_clause}
-    ORDER BY checked_at
-    LIMIT %(limit)s OFFSET %(skip)s;''').format(
-        where_clause=make_where_clause(
-            None if max_age_days is None else sql.SQL(
-                f"checked_at > NOW() - interval '{max_age_days:d} days'"
-            ),
-            None if approved is None else sql.SQL('approval = %(approved)s'),
-        ),
-    ), {"limit": limit, "skip": skip, "approved": approved})
-    return [{col: val for col, val in zip(columns, row)} for row in cur.fetchall()]
-
-
-def db_patch_approval2(cur: cursor, record):
-    cur.execute('''
-    UPDATE result2
-    SET approval = %(approval)s
-    FROM report
-    WHERE report.reportuuid = %(reportuuid)s
-      AND result2.reportid = report.reportid
-      AND result2.scopeuuid = %(scopeuuid)s
-      AND result2.version = %(version)s
-      AND result2.testcase = %(check)s
-    RETURNING resultid;''', record)
-    resultid, = cur.fetchone()
-    return resultid

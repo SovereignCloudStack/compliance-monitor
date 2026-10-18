@@ -1,6 +1,6 @@
 services:
   reverse-proxy:
-    image: traefik:v2.11
+    image: traefik:v3.7
     # Enables the web UI and tells Traefik to listen to docker
     command: >
         --api.insecure=true
@@ -26,14 +26,14 @@ services:
       - "127.0.0.1:5000:8080"
     environment:
       - SCM_DB_HOST=postgres
-      - SCM_DB_PORT=5432
+      - SCM_DB_PORT=$DB_PORT
+      - SCM_DB_NAME=$DB_NAME
       - SCM_DB_PASSWORD_FILE=/run/secrets/db_password
       # pass the following from the shell or put them into .env
       - SCM_HC_USER
       - SCM_HC_PASSWORD
       - SCM_BASE_URL
     volumes:
-      - ../Tests:/Tests
       - ./bootstrap.yaml:/code/bootstrap.yaml
       - ./templates:/code/templates
     labels:
@@ -50,11 +50,12 @@ services:
   postgres:
     image: postgres:16
     volumes:
-      - $HOME/data:/var/lib/postgresql/data
+      - $DB_HOME:/var/lib/postgresql/data
     environment:
       - POSTGRES_PASSWORD_FILE=/run/secrets/db_password
+      - PGPORT=$DB_PORT
     ports:
-      - "127.0.0.1:8001:5432"
+      - "127.0.0.1:8001:$DB_PORT"
     secrets:
       - db_password
     labels:
