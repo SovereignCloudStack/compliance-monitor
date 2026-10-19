@@ -13,7 +13,9 @@
     li {margin:0.33em 0;}
     #log + ul {padding-left:0;}
     #log + ul > li {margin:0 0 0.3em 0;line-height:1em;display:block;text-indent:1em hanging;}
-    #log + ul > li strong em {background-color:yellow;font-style:normal;}
+    #log + ul > li code {white-space:pre;}
+    #log + ul > li.attention {font-weight:bold;}
+    #log + ul > li.highlight {background-color:yellow;}
 </style>
 {% if title %}<h1>{{title}}</h1>
 {% endif %}{{fragment}}</body>
