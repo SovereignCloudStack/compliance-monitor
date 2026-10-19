@@ -57,10 +57,12 @@ Unknown attachment type.
 {% if report.log -%}
 ## Log{%if redacted %} (redacted){%endif%} {: #log }
 {% for line in report.log %}
-- {% if line.split(':', 1)[0].lower() in ('warning', 'error', 'critical') %}**_`{{line}}`_**{%
-  elif line.startswith('INFO: *** ') %}{% if 'PASS' in line %} `{{line}}` {% else %} **`{{line}}`** {% endif %} 
-  {: #{{line.split()[-1][1:-1]}} }{%
-  else %}{% for line0 in line.splitlines() %}`{{line0}}`{%if not loop.last%}<br>{%endif%}{% endfor %}{% endif %}
+- {% for line0 in line.splitlines() %}<code>{{line0}}</code>{%if not loop.last%}<br>{%endif%}{% endfor %}
+  {%- if line.split(':', 1)[0].lower() in ('warning', 'error', 'critical') %}
+  { .attention .highlight }
+  {%- elif line.startswith('INFO: *** ') %}
+  {: #{{line.split()[-1][1:-1]}} {% if 'PASS' not in line %}.attention{% endif %} }
+  {%- endif %}
 {%- endfor %}
 
 {% if report.unredacted -%}
