@@ -1,0 +1,132 @@
+# environments listed on the overview page (see overview.md.j2)
+# texts are Markdown; healthmon is either a note or a list of links
+- title: Certified SCS-compatible IaaS
+  intro: >-
+    These environments are officially certified by the SCS certification assessment body according to
+    [SCS-0004](https://docs.scs.community/standards/global/scs-0004). They are regularly tested against the
+    certificate scope [SCS-compatible IaaS](https://docs.scs.community/standards/scopes/scs-0501).
+  tables:
+    - scope: SCS-compatible IaaS
+      healthmon: true
+      rows:
+        - name: Cloud&Heat IaaS
+          url: https://sovereigncloudstack.org/en/certified-solution/cloud-heat/
+          description: Public cloud for customers (1 SCS region)
+          operator: Cloud&Heat Technologies GmbH
+          subject: cah-dd8a
+          object: scs-0501-v5.1
+          healthmon: n/a
+        - name: CNDS
+          url: https://sovereigncloudstack.org/en/certified-solution/cnds-public-cloud/
+          description: Public cloud for customers (2 SCS regions)
+          operator: artcodix GmbH
+          subject: artcodix
+          object: scs-0501-v6
+          healthmon:
+            HM: https://ohm.muc.cloud.cnds.io/
+        - name: REGIO.cloud
+          url: https://sovereigncloudstack.org/en/certified-solution/osism-gmbh/
+          description: Public cloud for customers (1 SCS region)
+          operator: OSISM GmbH
+          subject: regio-a
+          object: scs-0501-v5.1
+          healthmon:
+            HM: https://apimon.services.regio.digital/public-dashboards/17cf094a47404398a5b8e35a4a3968d4?orgId=1&refresh=5m
+        - name: ScaleUp Open Cloud
+          url: https://sovereigncloudstack.org/en/certified-solution/scaleup-technologies-gmbh-co-kg/
+          description: Public cloud for customers (1 SCS region)
+          operator: ScaleUp Technologies GmbH & Co. KG
+          subject: scaleup-occ2
+          object: scs-0501-v6
+          healthmon:
+            HM: https://health.occ2.scaleup.sovereignit.cloud
+- title: Certified SCS-compatible KaaS
+  intro: >-
+    These environments are officially certified by the SCS certification assessment body according to
+    [SCS-0004](https://docs.scs.community/standards/global/scs-0004). They are regularly tested against the
+    certificate scope [SCS-compatible KaaS](https://docs.scs.community/standards/scopes/scs-0502).
+  tables:
+    - scope: SCS-compatible KaaS
+      rows:
+        - name: noris Sovereign Cloud (nSC)
+          url: https://sovereigncloudstack.org/en/certified-solution/noris-network-ag/
+          description: Public KaaS cloud based on Gardener (1 SCS configuration)
+          operator: noris network AG
+          subject: noris-kaas
+          object: scs-0502-v1
+        - name: ScaleUp Open Cloud
+          url: https://sovereigncloudstack.org/en/certified-solution/scaleup-open-cloud/
+          description: Public KaaS cloud based on Gardener (1 SCS configuration)
+          operator: ScaleUp Technologies GmbH & Co. KG
+          subject: scaleup-kaas
+          object: scs-0502-v1
+        - name: Syself Autopilot
+          url: https://sovereigncloudstack.org/en/certified-solution/syself-gmbh/
+          description: KaaS offering based on ClusterStacks (1 SCS configuration)
+          operator: Syself GmbH
+          subject: syself-kaas
+          object: scs-0502-v1
+- title: Non-certified environments
+  intro: >-
+    These environments are not officially certified. Operators voluntarily list them to demonstrate their compliance.
+  tables:
+    - scope: SCS-compatible IaaS
+      healthmon: true
+      rows:
+        - name: aov.cloud
+          url: https://www.aov.de/
+          description: Community cloud for customers (1 SCS region)
+          operator: aov IT.Services GmbH
+          subject: aov-cloud
+          object: scs-0501-v5.1
+          healthmon:
+            HM: https://health.aov.cloud/
+        - name: CC@RRZE
+          url: https://cc.rrze.de/
+          description: Community Compute Cloud (CC) for [FAU](https://www.fau.de/) and Bavaria (1 SCS region)
+          operator: Erlangen National High Performance Computing Center (NHR@FAU) & Regionales Rechenzentrum Erlangen (RRZE)
+          subject: cc-rrze
+          object: scs-0501-v5.1
+          healthmon: (soon)
+        - name: noris Sovereign Cloud (nSC)
+          url: https://www.noris.de/en/it-services/cloud-services/cloud-solutions-for-enterprise-companies/noris-sovereign-cloud/
+          description: Public cloud for customers (1 SCS region)
+          operator: noris network AG
+          subject: nsc-iaas
+          object: scs-0501-v5.1
+          healthmon:
+            HM: https://healthmon.infra.noris.cloud/d/9ltTEmlnk/openstack-health-monitor-noris-nsc-region-nbg?var-mycloud=nsc
+        - name: pluscloud open
+          url: https://www.plusserver.com/en/products/pluscloud-open
+          description: Public cloud for customers (4 SCS regions)
+          operator: plusserver GmbH
+          subject: pco-prod
+          object: scs-0501-v5.1
+          healthmon:
+            HM1: https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-pco
+            HM2: https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod2
+            HM3: https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod3
+            HM4: https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod4
+        - name: scs2
+          url: https://docs.scs.community/community/cloud-resources/plusserver-gx-scs
+          description: Dev/Test/Demo environment (2nd gen) provided for SCS & GAIA-X context (1 SCS region)
+          operator: plusserver GmbH
+          subject: scs2
+          object: scs-0501-v5.1
+          healthmon:
+            HM: https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&refresh=5m&var-mycmd=All&var-mymethod=All&var-mywait=All&var-mybench=All&var-mycloud=gx-scs2
+        - name: syseleven
+          url: https://www.syseleven.de/en/products-services/openstack-cloud/
+          description: Public OpenStack Cloud (2 SCS regions)
+          operator: SysEleven GmbH
+          subject: syseleven
+          object: scs-0501-v5.1
+          healthmon: (soon)
+    - scope: SCS-compatible KaaS
+      rows:
+        - name: t8s
+          url: https://teuto.net/produkte/t8s/
+          description: Public KaaS cloud based on Cluster API
+          operator: teuto.net Netzdienste GmbH
+          subject: teuto
+          object: scs-0502-v1

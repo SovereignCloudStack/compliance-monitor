@@ -1,74 +1,18 @@
 {#
-we could of course iterate over results etc., but hardcode the table (except the actual results, of course)
-for the time being to have the highest degree of control
+the environments are listed in environments.yaml
 -#}
 {% set results = scores | prune_old_attestations('day') %}
-{% set iaas_v5 = 'scs-0501-v5.1' -%}
-{% set iaas_v6 = 'scs-0501-v6' -%}
-{% set kaas_v1 = 'scs-0502-v1' -%}
+{% for section in environments %}
+### {{ section.title }}
 
-### Certified SCS-compatible IaaS
-
-These environments are officially certified by the SCS certification assessment body according to [SCS-0004](https://docs.scs.community/standards/global/scs-0004). They are regularly tested against the certificate scope [SCS-compatible IaaS](https://docs.scs.community/standards/scopes/scs-0501).
-
-| Name  | Description  | Operator  | SCS-compatible IaaS  | HealthMon  |
-|-------|--------------|-----------|----------------------|:----------:|
-| [Cloud&amp;Heat IaaS](https://sovereigncloudstack.org/en/certified-solution/cloud-heat/) | Public cloud for customers (1 SCS region) | Cloud&amp;Heat Technologies GmbH |
-{#- #} [{{ results['cah-dd8a'][iaas_v5] | summary }} v5.1]({{ detail_url('cah-dd8a', iaas_v5) }}) {# -#}
-| n/a |
-| [CNDS](https://sovereigncloudstack.org/en/certified-solution/cnds-public-cloud/) | Public cloud for customers (2 SCS regions) | artcodix GmbH |
-{#- #} [{{ results['artcodix'][iaas_v6] | summary }} v6]({{ detail_url('artcodix', iaas_v6) }}) {# -#}
-| [HM](https://ohm.muc.cloud.cnds.io/) |
-| [REGIO.cloud](https://sovereigncloudstack.org/en/certified-solution/osism-gmbh/) | Public cloud for customers (1 SCS region) | OSISM GmbH |
-{#- #} [{{ results['regio-a'][iaas_v5] | summary }} v5.1]({{ detail_url('regio-a', iaas_v5) }}) {# -#}
-| [HM](https://apimon.services.regio.digital/public-dashboards/17cf094a47404398a5b8e35a4a3968d4?orgId=1&refresh=5m) |
-| [ScaleUp Open Cloud](https://sovereigncloudstack.org/en/certified-solution/scaleup-technologies-gmbh-co-kg/) | Public cloud for customers (1 SCS region) | ScaleUp Technologies GmbH & Co. KG |
-{#- #} [{{ results['scaleup-occ2'][iaas_v6] | summary }} v6]({{ detail_url('scaleup-occ2', iaas_v6) }}) {# -#}
-| [HM](https://health.occ2.scaleup.sovereignit.cloud) |
-
-### Certified SCS-compatible KaaS
-
-These environments are officially certified by the SCS certification assessment body according to [SCS-0004](https://docs.scs.community/standards/global/scs-0004). They are regularly tested against the certificate scope [SCS-compatible KaaS](https://docs.scs.community/standards/scopes/scs-0502).
-
-| Name  | Description  | Operator  | SCS-compatible KaaS  |
-|-------|--------------|-----------|----------------------|
-| [noris Sovereign Cloud (nSC)](https://sovereigncloudstack.org/en/certified-solution/noris-network-ag/) | Public KaaS cloud based on Gardener (1 SCS configuration) | noris network AG |
-{#- #} [{{ results['noris-kaas'][kaas_v1] | summary }} v1]({{ detail_url('noris-kaas', kaas_v1) }}) {# -#}
-|
-| [ScaleUp Open Cloud](https://sovereigncloudstack.org/en/certified-solution/scaleup-open-cloud/) | Public KaaS cloud based on Gardener (1 SCS configuration) | ScaleUp Technologies GmbH & Co. KG |
-{#- #} [{{ results['scaleup-kaas'][kaas_v1] | summary }} v1]({{ detail_url('scaleup-kaas', kaas_v1) }}) {# -#}
-|
-| [Syself Autopilot](https://sovereigncloudstack.org/en/certified-solution/syself-gmbh/) | KaaS offering based on ClusterStacks (1 SCS configuration) | Syself GmbH |
-{#- #} [{{ results['syself-kaas'][kaas_v1] | summary }} v1]({{ detail_url('syself-kaas', kaas_v1) }}) {# -#}
-|
-
-### Non-certified environments
-
-These environments are not officially certified. Operators voluntarily list them to demonstrate their compliance.
-
-| Name  | Description  | Operator  | SCS-compatible IaaS  | HealthMon  |
-|-------|--------------|-----------|----------------------|:----------:|
-| [aov.cloud](https://www.aov.de/) | Community cloud for customers (1 SCS region) | aov IT.Services GmbH |
-{#- #} [{{ results['aov-cloud'][iaas_v5] | summary }} v5.1]({{ detail_url('aov-cloud', iaas_v5) }}) {# -#}
-| [HM](https://health.aov.cloud/) |
-| [CC@RRZE](https://cc.rrze.de/) | Community Compute Cloud (CC) for [FAU](https://www.fau.de/) and Bavaria (1 SCS region) | Erlangen National High Performance Computing Center (NHR@FAU) & Regionales Rechenzentrum Erlangen (RRZE) |
-{#- #} [{{ results['cc-rrze'][iaas_v5] | summary }} v5.1]({{ detail_url('cc-rrze', iaas_v5) }}) {# -#}
-| (soon) |
-| [noris Sovereign Cloud (nSC)](https://www.noris.de/en/it-services/cloud-services/cloud-solutions-for-enterprise-companies/noris-sovereign-cloud/) | Public cloud for customers (1 SCS region) | noris network AG |
-{#- #} [{{ results['nsc-iaas'][iaas_v5] | summary }} v5.1]({{ detail_url('nsc-iaas', iaas_v5) }}) {# -#}
-| [HM](https://healthmon.infra.noris.cloud/d/9ltTEmlnk/openstack-health-monitor-noris-nsc-region-nbg?var-mycloud=nsc) |
-| [pluscloud open](https://www.plusserver.com/en/products/pluscloud-open) | Public cloud for customers (4 SCS regions) | plusserver GmbH |
-{#- #} [{{ results['pco-prod'][iaas_v5] | summary }} v5.1]({{ detail_url('pco-prod', iaas_v5) }}) {# -#}
-| [HM1](https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-pco) [HM2](https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod2) [HM3](https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod3) [HM4](https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&var-mycloud=plus-prod4) |
-| [scs2](https://docs.scs.community/community/cloud-resources/plusserver-gx-scs) | Dev/Test/Demo environment (2nd gen) provided for SCS & GAIA-X context (1 SCS region) | plusserver GmbH |
-{#- #} [{{ results['scs2'][iaas_v5] | summary }} v5.1]({{ detail_url('scs2', iaas_v5) }}) {# -#}
-| [HM](https://health.prod1.plusserver.sovereignit.cloud:3000/d/9ltTEmlnk/openstack-health-monitor2?orgId=1&refresh=5m&var-mycmd=All&var-mymethod=All&var-mywait=All&var-mybench=All&var-mycloud=gx-scs2) |
-| [syseleven](https://www.syseleven.de/en/products-services/openstack-cloud/) | Public OpenStack Cloud (2 SCS regions) | SysEleven GmbH |
-{#- #} [{{ results['syseleven'][iaas_v5] | summary }} v5.1]({{ detail_url('syseleven', iaas_v5) }}) {# -#}
-| (soon) |
-
-| Name  | Description  | Operator  | SCS-compatible KaaS  |
-|-------|--------------|-----------|----------------------|
-| [t8s](https://teuto.net/produkte/t8s/) | Public KaaS cloud based on Cluster API | teuto.net Netzdienste GmbH | {# #}
-{#- #} [{{ results['teuto'][kaas_v1] | summary }} v1]({{ detail_url('teuto', kaas_v1) }}) {# -#}
-|
+{{ section.intro }}
+{% for table in section.tables %}
+| Name  | Description  | Operator  | {{ table.scope }}  |{% if table.healthmon %} HealthMon  |{% endif %}
+|-------|--------------|-----------|----------------------|{% if table.healthmon %}:----------:|{% endif %}
+{% for row in table.rows -%}
+| [{{ row.name }}]({{ row.url }}) | {{ row.description }} | {{ row.operator }} |
+{#- #} [{{ results[row.subject][row.object] | summary }} {{ row.object.rsplit('-', 1)[-1] }}]({{ detail_url(row.subject, row.object) }}) |
+{%- if table.healthmon %} {% if row.healthmon is mapping %}{% for label, url in row.healthmon.items() %}[{{ label }}]({{ url }}){{ ' ' if not loop.last }}{% endfor %}{% else %}{{ row.healthmon }}{% endif %} |{% endif %}
+{% endfor %}
+{%- endfor %}
+{%- endfor %}

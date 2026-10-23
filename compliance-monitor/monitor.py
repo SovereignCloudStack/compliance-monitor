@@ -115,6 +115,7 @@ env = Environment()  # populate this on startup (final section of this file)
 templates_map = {
     k: None for k in REQUIRED_TEMPLATES
 }
+environments = []  # populate this on startup as well (see templates/environments.yaml)
 
 
 class TimestampEncoder(json.JSONEncoder):
@@ -229,6 +230,11 @@ def import_templates(template_dir, env, templates):
             continue
         with open(os.path.join(template_dir, fn), "r") as fileobj:
             templates[name] = env.from_string(fileobj.read())
+
+
+def import_yaml(template_dir, fn):
+    with open(os.path.join(template_dir, fn), "r") as fileobj:
+        return ruamel.yaml.YAML(typ='safe').load(fileobj)
 
 
 def validate_templates(templates, required_templates=REQUIRED_TEMPLATES):
@@ -533,7 +539,7 @@ def _make_table_view(conn, view_type, detail_page, include_drafts=False):
         title += ' (incl. drafts)'
     return render_view(
         VIEW_TABLE, view_type, scores=scores, base_url=settings.base_url, detail_page=detail_page,
-        title=title,
+        title=title, environments=environments,
     )
 
 
@@ -654,6 +660,7 @@ def reload_static_config(*args, do_ensure_schema=False):
     # allow arbitrary arguments so it can readily be used as signal handler
     logger.info("loading static config")
     import_templates(settings.template_path, env=env, templates=templates_map)
+    environments[:] = import_yaml(settings.template_path, 'environments.yaml')
     validate_templates(templates=templates_map)
     with mk_conn(settings=settings) as conn:
         if do_ensure_schema:
