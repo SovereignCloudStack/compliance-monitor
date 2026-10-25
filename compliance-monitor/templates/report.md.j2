@@ -6,43 +6,43 @@
 
 ## Attestations
 
-| subject/object | predicate | evidence | guid |
+| subject/object | predicate | evidence | timestamp |
 |---|---|---|---|
 {% for a in report.attestations -%}
-| {{ a.subject }}/{{ a.object }} | {{ a | summary }} {{ a.predicate }} | {# #}
+| {{ a.subject }}/[{{ a.object }}](canonical-url-for/{{ a.object }}) | {{ a | summary }} {{ a.predicate }} { title="{{ a.guid }}" } | {# #}
     {%- if a._inlog -%}
-    [see below](#{{ a.guid }})
+    [see attachment](#{{ a.guid }})
     {%- else -%}
     (not provided)
     {: #{{ a.guid }} }
     {%- endif -%}
-{# #} | {{ a.guid }} |
+{# #} | {{ a.timestamp | long_isodate }} |
 {% endfor%}
 
 {% if report.attachments -%}
 ## Attachments
 
-{% for id_, attachment in report.attachments.items() %}
+{% for attachment in report.attachments.values() | selectattr("_attestation") | sort(attribute="_attestation._idx") %}
 {% set a0 = attachment._attestation -%}
-{% if a0 -%}
-### {{ a0.subject }}/{{ a0.object}}: {{ a0.predicate }} ({{id_}}) {: #{{id_}} }
+### {{ a0.subject }}/{{ a0.object}}: {{ a0.predicate }} ({{a0.guid}}) {: #{{ a0.guid }} }
 
-| subject/object | predicate | evidence |
-|---|---|---|
+| subject/object | predicate | evidence | timestamp |
+|---|---|---|---|
 {% for pred in ('fail', 'miss', 'dnf', 'pass') -%}
 {% set bucket = attachment[pred] -%}
 {% for a in bucket -%}
-| [{{ a.subject }}/{{ a.object }}](canonical-url-for/{{ a.object }}) {# -#}
-| {{ a | summary }} {{ a.predicate }} | {# #}
+| {{ a.subject }}/[{{ a.object }}](canonical-url-for/{{ a.object }}) {# -#}
+| {{ a | summary }} {{ a.predicate }} { title="{{ a.guid }}" } | {# #}
     {%- if a.report -%}
-    [{{ a.timestamp | short_isodate }}]({{ report_url(a.report, a.guid) }}) { title="{{ a.report }} {{ a.timestamp }}" }
+    [see report]({{ report_url(a.report, a.guid) }}) { title="{{ a.report }}" }
     {%- elif a.guid -%}
-    [this report](#{{a.guid}})
+    [this report](#{{a.guid}}) { title="{{ uuid }} {{ a.timestamp }}" }
     {%- endif -%}
-{# #} |
+{# #} | {{ a.timestamp | long_isodate }} |
 {% endfor %}{# attachment -#}
 {% endfor %}{# categories #}
-{%- else %}{# is attestation -#}
+{%- endfor %}
+{% for attachment in report.attachments.values() | rejectattr("_attestation") %}
 ### {{id_}} {: #{{id_}} }
 
 Unknown attachment type.
@@ -50,7 +50,6 @@ Unknown attachment type.
 ```
 {{ attachment }}
 ```
-{%- endif %}{# is attestation #}
 {%- endfor %}
 {%- endif %}
 
