@@ -1,5 +1,8 @@
 # SCS compliance monitor
 
+**NOTE: This project is being developed without the aid of commercial generative AI. If you must use
+'AI', at least use something that is in line with our values of open source and digital sovereignty.**
+
 A service with a REST-like interface, backed by Postgresql, to manage data about compliance of subjects
 with SCS certificate requirements.
 
