@@ -1,5 +1,8 @@
 # SCS compliance monitor
 
+**NOTE: As of now, this is firmly work in progress. The official repository is still
+[SovereignCloudStack/standards](https://github.com/SovereignCloudStack/standards).**
+
 **NOTE: This project is being developed without the aid of commercial generative AI. If you must use
 'AI', at least use something that is in line with our values of open source and digital sovereignty.**
 
